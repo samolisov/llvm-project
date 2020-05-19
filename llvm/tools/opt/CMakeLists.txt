@@ -24,6 +24,7 @@ set(LLVM_LINK_COMPONENTS
   TransformUtils
   Vectorize
   Passes
+  ExperimentPasses
   )
 
 add_llvm_tool(opt

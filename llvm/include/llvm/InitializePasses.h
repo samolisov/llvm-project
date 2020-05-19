@@ -441,6 +441,9 @@ void initializeWriteBitcodePassPass(PassRegistry&);
 void initializeWriteThinLTOBitcodePass(PassRegistry&);
 void initializeXRayInstrumentationPass(PassRegistry&);
 
+void initializeLLVMExperimentPasses(PassRegistry &);
+void initializeLegacyFunctionArgumentUsagePassPass(PassRegistry &);
+
 } // end namespace llvm
 
 #endif // LLVM_INITIALIZEPASSES_H

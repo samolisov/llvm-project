@@ -585,6 +585,8 @@ int main(int argc, char **argv) {
   initializeHardwareLoopsPass(Registry);
   initializeTypePromotionPass(Registry);
 
+  initializeLLVMExperimentPasses(Registry);
+
 #ifdef BUILD_EXAMPLES
   initializeExampleIRTransforms(Registry);
 #endif
