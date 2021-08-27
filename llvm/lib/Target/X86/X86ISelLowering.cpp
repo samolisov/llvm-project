@@ -2018,6 +2018,7 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
   setTargetDAGCombine(ISD::FSUB);
   setTargetDAGCombine(ISD::FNEG);
   setTargetDAGCombine(ISD::FMA);
+  setTargetDAGCombine(ISD::FSIN);
   setTargetDAGCombine(ISD::STRICT_FMA);
   setTargetDAGCombine(ISD::FMINNUM);
   setTargetDAGCombine(ISD::FMAXNUM);
@@ -46553,6 +46554,55 @@ static SDValue combineFneg(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
+/// Do target-specific dag combines on floating point sin(x) calculation.
+/// The idea is to replace sin(x) calls with an expression:
+/// (f32/f64) sin_int(x * 1000) / 1000.0.
+static SDValue combineFsin(SDNode *N, SelectionDAG &DAG,
+                           TargetLowering::DAGCombinerInfo &DCI,
+                           const X86Subtarget &Subtarget) {
+  EVT VT = N->getValueType(0);
+  MVT IntVT = Subtarget.is64Bit() ? MVT::i64 : MVT::i32;
+  Type *IntTy = Subtarget.is64Bit() ? Type::getInt64Ty(*DAG.getContext())
+                                    : Type::getInt32Ty(*DAG.getContext());
+
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+  SDValue LHS = N->getOperand(0);
+  SDLoc DL(N);
+
+  // Let legalize expand this if it isn't a legal type yet.
+  if (!TLI.isTypeLegal(VT))
+    return SDValue();
+
+  SDValue IntFactor = DAG.getConstant(1000, DL, IntVT);
+  SDValue FDivider = DAG.getConstantFP(1000.0, DL, VT);
+
+  SDValue IntOp = DAG.getNode(ISD::FP_TO_SINT, DL, IntVT, LHS);
+  SDValue SinOp = DAG.getNode(ISD::MUL, DL, IntVT, IntOp, IntFactor);
+
+  TargetLowering::ArgListTy Args;
+  TargetLowering::ArgListEntry Entry;
+
+  Entry.Node = SinOp;
+  Entry.Ty = IntTy;
+  Entry.IsSExt = false;
+  Entry.IsZExt = false;
+  Args.push_back(Entry);
+
+  const char *LibcallName = TLI.getLibcallName(RTLIB::SIN_INT);
+  SDValue Callee =
+      DAG.getExternalSymbol(LibcallName, TLI.getPointerTy(DAG.getDataLayout()));
+
+  TargetLowering::CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(DL)
+      .setChain(DAG.getEntryNode())
+      .setLibCallee(CallingConv::C, IntTy, Callee, std::move(Args));
+
+  std::pair<SDValue, SDValue> CallResult = TLI.LowerCallTo(CLI);
+
+  SDValue SinRes = DAG.getNode(ISD::SINT_TO_FP, DL, VT, CallResult.first);
+  return DAG.getNode(ISD::FDIV, DL, VT, SinRes, FDivider);
+}
+
 SDValue X86TargetLowering::getNegatedExpression(SDValue Op, SelectionDAG &DAG,
                                                 bool LegalOperations,
                                                 bool ForCodeSize,
@@ -50333,6 +50383,7 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case ISD::FADD:
   case ISD::FSUB:           return combineFaddFsub(N, DAG, Subtarget);
   case ISD::FNEG:           return combineFneg(N, DAG, DCI, Subtarget);
+  case ISD::FSIN:           return combineFsin(N, DAG, DCI, Subtarget);
   case ISD::TRUNCATE:       return combineTruncate(N, DAG, Subtarget);
   case X86ISD::VTRUNC:      return combineVTRUNC(N, DAG, DCI);
   case X86ISD::ANDNP:       return combineAndnp(N, DAG, DCI, Subtarget);
