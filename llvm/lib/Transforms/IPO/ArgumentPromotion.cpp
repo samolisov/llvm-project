@@ -724,11 +724,17 @@ static bool canPaddingBeAccessed(Argument *Arg) {
   SmallVector<StoreInst *, 16> Stores;
 
   // Scan through the uses recursively to make sure the pointer is always used
-  // sanely.
+  // sanely. Note: we don't care whether the parts of the argument are actually
+  // loaded or stored, if we have an improper user (GEP with a non-constant
+  // index for example), we report that the padding can be accessed even if
+  // the user doesn't lead to a load or store instruction.
   SmallVector<Value *, 16> WorkList(Arg->users());
   while (!WorkList.empty()) {
     Value *V = WorkList.pop_back_val();
     if (isa<GetElementPtrInst>(V) || isa<PHINode>(V)) {
+      auto *GEP = dyn_cast<GetElementPtrInst>(V);
+      if (GEP && !GEP->hasAllConstantIndices())
+        return true;
       if (PtrValues.insert(V).second)
         append_range(WorkList, V->users());
     } else if (StoreInst *Store = dyn_cast<StoreInst>(V)) {
