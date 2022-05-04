@@ -86,7 +86,6 @@ using namespace llvm;
 #define DEBUG_TYPE "argpromotion"
 
 STATISTIC(NumArgumentsPromoted, "Number of pointer arguments promoted");
-STATISTIC(NumByValArgsPromoted, "Number of byval arguments promoted");
 STATISTIC(NumArgumentsDead, "Number of dead pointer args eliminated");
 
 namespace {
@@ -156,7 +155,6 @@ static Value *createByteGEP(IRBuilderBase &IRB, const DataLayout &DL,
 static Function *doPromotion(
     Function *F,
     const DenseMap<Argument *, SmallVector<OffsetAndArgPart, 4>> &ArgsToPromote,
-    SmallPtrSetImpl<Argument *> &ByValArgsToTransform,
     Optional<function_ref<void(CallBase &OldCS, CallBase &NewCS)>>
         ReplaceCallSite) {
   // Start by computing a new prototype for the function, which is the same as
@@ -174,15 +172,7 @@ static Function *doPromotion(
   unsigned ArgNo = 0;
   for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(); I != E;
        ++I, ++ArgNo) {
-    if (ByValArgsToTransform.count(&*I)) {
-      // Simple byval argument? Just add all the struct element types.
-      Type *AgTy = I->getParamByValType();
-      StructType *STy = cast<StructType>(AgTy);
-      llvm::append_range(Params, STy->elements());
-      ArgAttrVec.insert(ArgAttrVec.end(), STy->getNumElements(),
-                        AttributeSet());
-      ++NumByValArgsPromoted;
-    } else if (!ArgsToPromote.count(&*I)) {
+    if (!ArgsToPromote.count(&*I)) {
       // Unchanged argument
       Params.push_back(I->getType());
       ArgAttrVec.push_back(PAL.getParamAttrs(ArgNo));
@@ -251,28 +241,9 @@ static Function *doPromotion(
     ArgNo = 0;
     for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(); I != E;
          ++I, ++AI, ++ArgNo)
-      if (!ArgsToPromote.count(&*I) && !ByValArgsToTransform.count(&*I)) {
+      if (!ArgsToPromote.count(&*I)) {
         Args.push_back(*AI); // Unmodified argument
         ArgAttrVec.push_back(CallPAL.getParamAttrs(ArgNo));
-      } else if (ByValArgsToTransform.count(&*I)) {
-        // Emit a GEP and load for each element of the struct.
-        Type *AgTy = I->getParamByValType();
-        StructType *STy = cast<StructType>(AgTy);
-        Value *Idxs[2] = {
-            ConstantInt::get(Type::getInt32Ty(F->getContext()), 0), nullptr};
-        const StructLayout *SL = DL.getStructLayout(STy);
-        Align StructAlign = *I->getParamAlign();
-        for (unsigned J = 0, Elems = STy->getNumElements(); J != Elems; ++J) {
-          Idxs[1] = ConstantInt::get(Type::getInt32Ty(F->getContext()), J);
-          auto *Idx =
-              IRB.CreateGEP(STy, *AI, Idxs, (*AI)->getName() + "." + Twine(J));
-          // TODO: Tell AA about the new values?
-          Align Alignment =
-              commonAlignment(StructAlign, SL->getElementOffset(J));
-          Args.push_back(IRB.CreateAlignedLoad(
-              STy->getElementType(J), Idx, Alignment, Idx->getName() + ".val"));
-          ArgAttrVec.push_back(AttributeSet());
-        }
       } else if (!I->use_empty()) {
         Value *V = *AI;
         const auto &ArgParts = ArgsToPromote.find(&*I)->second;
@@ -346,43 +317,12 @@ static Function *doPromotion(
   // the new arguments, also transferring over the names as well.
   Function::arg_iterator I2 = NF->arg_begin();
   for (Argument &Arg : F->args()) {
-    if (!ArgsToPromote.count(&Arg) && !ByValArgsToTransform.count(&Arg)) {
+    if (!ArgsToPromote.count(&Arg)) {
       // If this is an unmodified argument, move the name and users over to the
       // new version.
       Arg.replaceAllUsesWith(&*I2);
       I2->takeName(&Arg);
       ++I2;
-      continue;
-    }
-
-    if (ByValArgsToTransform.count(&Arg)) {
-      // In the callee, we create an alloca, and store each of the new incoming
-      // arguments into the alloca.
-      Instruction *InsertPt = &NF->begin()->front();
-
-      // Just add all the struct element types.
-      Type *AgTy = Arg.getParamByValType();
-      Align StructAlign = *Arg.getParamAlign();
-      Value *TheAlloca = new AllocaInst(AgTy, DL.getAllocaAddrSpace(), nullptr,
-                                        StructAlign, "", InsertPt);
-      StructType *STy = cast<StructType>(AgTy);
-      Value *Idxs[2] = {ConstantInt::get(Type::getInt32Ty(F->getContext()), 0),
-                        nullptr};
-      const StructLayout *SL = DL.getStructLayout(STy);
-
-      for (unsigned J = 0, Elems = STy->getNumElements(); J != Elems; ++J) {
-        Idxs[1] = ConstantInt::get(Type::getInt32Ty(F->getContext()), J);
-        Value *Idx = GetElementPtrInst::Create(
-            AgTy, TheAlloca, Idxs, TheAlloca->getName() + "." + Twine(J),
-            InsertPt);
-        I2->setName(Arg.getName() + "." + Twine(J));
-        Align Alignment = commonAlignment(StructAlign, SL->getElementOffset(J));
-        new StoreInst(&*I2++, Idx, false, Alignment, InsertPt);
-      }
-
-      // Anything that used the arg should now use the alloca.
-      Arg.replaceAllUsesWith(TheAlloca);
-      TheAlloca->takeName(&Arg);
       continue;
     }
 
@@ -402,8 +342,8 @@ static Function *doPromotion(
     }
 
     // Otherwise, if we promoted this argument, then all users are load
-    // instructions (with possible casts and GEPs in between).
-
+    // instructions (with possible casts and GEPs in between) or store ones if
+    // the byval attribute is used.
     SmallVector<Value *, 16> Worklist;
     SmallVector<Instruction *, 16> DeadInsts;
     append_range(Worklist, Arg.users());
@@ -424,6 +364,16 @@ static Function *doPromotion(
         assert(Ptr == &Arg && "Not constant offset from arg?");
         LI->replaceAllUsesWith(OffsetToArg[Offset.getSExtValue()]);
         DeadInsts.push_back(LI);
+        continue;
+      }
+
+      if (auto *SI = dyn_cast<StoreInst>(V)) {
+        // Stores are only allowed for byval arguments. This is a job of the
+        // findArgParts function to decide should arguments with stores as
+        // users be eligible for promotion. If a store is an allowed user, it
+        // writes to a temporary (created explicitly or implicitly with the
+        // byval attribute, so the instruction can be removed too).
+        DeadInsts.push_back(SI);
         continue;
       }
 
@@ -465,6 +415,7 @@ static bool allCallersPassValidPointerForArgument(Argument *Arg,
 /// parts it can be promoted into.
 static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
                          unsigned MaxElements, bool IsRecursive,
+                         bool IsStoresAllowed,
                          SmallVectorImpl<OffsetAndArgPart> &ArgPartsVec) {
   // Quick exit for unused arguments
   if (Arg->use_empty())
@@ -604,6 +555,10 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
       Loads.push_back(LI);
       continue;
     }
+
+    // Stores are allowed for byval arguments
+    if (IsStoresAllowed && isa<StoreInst>(V))
+      continue;
 
     // Unknown user.
     LLVM_DEBUG(dbgs() << "ArgPromotion of " << *Arg << " failed: "
@@ -839,7 +794,6 @@ promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
   // Check to see which arguments are promotable.  If an argument is promotable,
   // add it to ArgsToPromote.
   DenseMap<Argument *, SmallVector<OffsetAndArgPart, 4>> ArgsToPromote;
-  SmallPtrSet<Argument *, 8> ByValArgsToTransform;
   for (Argument *PtrArg : PointerArgs) {
     // Replace sret attribute with noalias. This reduces register pressure by
     // avoiding a register copy.
@@ -856,63 +810,34 @@ promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
 
     // If we can promote the pointer to its value.
     SmallVector<OffsetAndArgPart, 4> ArgParts;
-    if (findArgParts(PtrArg, DL, AAR, MaxElements, IsRecursive, ArgParts)) {
+    // And if this is a byval argument we also allow to have the store
+    // instructions as the argument's users if the passed value is densely
+    // packed or if we can prove the padding bytes are never accessed. Only
+    // handle in such way arguments with specified alignment; if it's
+    // unspecified, the actual alignment of the argument is target-specific.
+    Type *ByValTy = PtrArg->getParamByValType();
+    bool IsStoresAllowed =
+        ByValTy && PtrArg->getParamAlign() &&
+        (ArgumentPromotionPass::isDenselyPacked(ByValTy, DL) ||
+         !canPaddingBeAccessed(PtrArg));
+
+    if (findArgParts(PtrArg, DL, AAR, MaxElements, IsRecursive, IsStoresAllowed,
+                     ArgParts)) {
       SmallVector<Type *, 4> Types;
       for (const auto &Pair : ArgParts)
         Types.push_back(Pair.second.Ty);
 
       if (areTypesABICompatible(Types, *F, TTI)) {
         ArgsToPromote.insert({PtrArg, std::move(ArgParts)});
-        continue;
       }
-    }
-
-    // Otherwise, if this is a byval argument, and if the aggregate type is
-    // small, just pass the elements, which is always safe, if the passed value
-    // is densely packed or if we can prove the padding bytes are never
-    // accessed.
-    //
-    // Only handle arguments with specified alignment; if it's unspecified, the
-    // actual alignment of the argument is target-specific.
-    Type *ByValTy = PtrArg->getParamByValType();
-    bool IsSafeToPromote =
-        ByValTy && PtrArg->getParamAlign() &&
-        (ArgumentPromotionPass::isDenselyPacked(ByValTy, DL) ||
-         !canPaddingBeAccessed(PtrArg));
-    if (!IsSafeToPromote) {
-      LLVM_DEBUG(dbgs() << "ArgPromotion disables passing the elements of"
-                        << " the argument '" << PtrArg->getName()
-                        << "' because it is not safe.\n");
-      continue;
-    }
-    if (StructType *STy = dyn_cast<StructType>(ByValTy)) {
-      if (MaxElements > 0 && STy->getNumElements() > MaxElements) {
-        LLVM_DEBUG(dbgs() << "ArgPromotion disables passing the elements of"
-                          << " the argument '" << PtrArg->getName()
-                          << "' because it would require adding more"
-                          << " than " << MaxElements
-                          << " arguments to the function.\n");
-        continue;
-      }
-      SmallVector<Type *, 4> Types;
-      append_range(Types, STy->elements());
-
-      // If all the elements are single-value types, we can promote it.
-      bool AllSimple =
-          all_of(Types, [](Type *Ty) { return Ty->isSingleValueType(); });
-
-      // Safe to transform. Passing the elements as a scalar will allow sroa to
-      // hack on the new alloca we introduce.
-      if (AllSimple && areTypesABICompatible(Types, *F, TTI))
-        ByValArgsToTransform.insert(PtrArg);
     }
   }
 
   // No promotable pointer arguments.
-  if (ArgsToPromote.empty() && ByValArgsToTransform.empty())
+  if (ArgsToPromote.empty())
     return nullptr;
 
-  return doPromotion(F, ArgsToPromote, ByValArgsToTransform, ReplaceCallSite);
+  return doPromotion(F, ArgsToPromote, ReplaceCallSite);
 }
 
 PreservedAnalyses ArgumentPromotionPass::run(LazyCallGraph::SCC &C,
