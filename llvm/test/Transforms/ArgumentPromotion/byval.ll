@@ -20,7 +20,6 @@ entry:
   ret void
 }
 
-
 define internal void @g(%struct.ss* byval(%struct.ss) align 32 %b) nounwind {
 ; CHECK-LABEL: define {{[^@]+}}@g
 ; CHECK-SAME: (i32 [[B_0:%.*]]) #[[ATTR0]] {
@@ -59,6 +58,29 @@ entry:
   ret void
 }
 
+; Don't transform if an argument is written to and then is loaded from,
+; the Alias Analysis' 'canInstructionRangeModRef' check has to return
+; 'false' in that case.
+define internal void @k(%struct.ss* byval(%struct.ss) align 4 %b) nounwind  {
+; CHECK-LABEL: define {{[^@]+}}@k
+; CHECK-SAME: (%struct.ss* byval([[STRUCT_SS:%.*]]) align 4 [[B:%.*]]) #[[ATTR0]] {
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[TEMP:%.*]] = getelementptr [[STRUCT_SS]], %struct.ss* [[B]], i32 0, i32 0
+; CHECK-NEXT:    [[TEMP1:%.*]] = load i32, i32* [[TEMP]], align 4
+; CHECK-NEXT:    [[TEMP2:%.*]] = add i32 [[TEMP1]], 1
+; CHECK-NEXT:    store i32 [[TEMP2]], i32* [[TEMP]], align 4
+; CHECK-NEXT:    [[TEMP3:%.*]] = load i32, i32* [[TEMP]], align 4
+; CHECK-NEXT:    ret void
+;
+entry:
+  %temp = getelementptr %struct.ss, %struct.ss* %b, i32 0, i32 0
+  %temp1 = load i32, i32* %temp, align 4
+  %temp2 = add i32 %temp1, 1
+  store i32 %temp2, i32* %temp, align 4
+  %temp3 = load i32, i32* %temp, align 4
+  ret void
+}
+
 define i32 @main() nounwind  {
 ; CHECK-LABEL: define {{[^@]+}}@main
 ; CHECK-SAME: () #[[ATTR0]] {
@@ -77,6 +99,7 @@ define i32 @main() nounwind  {
 ;                                                            TODO should be align 32!
 ; CHECK-NEXT:    call void @g(i32 [[S_01_VAL]])
 ; CHECK-NEXT:    call void @h(%struct.ss* byval([[STRUCT_SS]]) [[S]])
+; CHECK-NEXT:    call void @k(%struct.ss* byval([[STRUCT_SS]]) align 4 [[S]])
 ; CHECK-NEXT:    ret i32 0
 ;
 entry:
@@ -88,6 +111,7 @@ entry:
   call void @f(%struct.ss* byval(%struct.ss) align 4 %S) nounwind
   call void @g(%struct.ss* byval(%struct.ss) align 32 %S) nounwind
   call void @h(%struct.ss* byval(%struct.ss) %S) nounwind
+  call void @k(%struct.ss* byval(%struct.ss) align 4 %S) nounwind
   ret i32 0
 }
 
