@@ -33,8 +33,6 @@ define i32 @test(i32* %X) {
 ; CHECK-NEXT:    store i64 2, i64* [[TEMP4]], align 4
 ; CHECK-NEXT:    [[S_0:%.*]] = getelementptr [[STRUCT_SS]], %struct.ss* [[S]], i64 0, i32 0
 ; CHECK-NEXT:    [[S_0_VAL:%.*]] = load i32, i32* [[S_0]], align 4
-;                                                          TODO align 4 or align 8? align 8, but not from struct,
-;                                                          from byval argument!
 ; CHECK-NEXT:    call void @f(i32 [[S_0_VAL]])
 ; CHECK-NEXT:    ret i32 0
 ;

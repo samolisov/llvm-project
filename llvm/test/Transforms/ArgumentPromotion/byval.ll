@@ -95,8 +95,6 @@ define i32 @main() nounwind  {
 ; CHECK-NEXT:    call void @f(i32 [[S_0_VAL]])
 ; CHECK-NEXT:    [[S_01:%.*]] = getelementptr [[STRUCT_SS]], %struct.ss* [[S]], i64 0, i32 0
 ; CHECK-NEXT:    [[S_01_VAL:%.*]] = load i32, i32* [[S_01]], align 4
-;                                                            TODO: we can use alignment in byval, must preserve!
-;                                                            TODO should be align 32!
 ; CHECK-NEXT:    call void @g(i32 [[S_01_VAL]])
 ; CHECK-NEXT:    call void @h(%struct.ss* byval([[STRUCT_SS]]) [[S]])
 ; CHECK-NEXT:    call void @k(%struct.ss* byval([[STRUCT_SS]]) align 4 [[S]])
