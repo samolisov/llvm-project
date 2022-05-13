@@ -415,7 +415,6 @@ static bool allCallersPassValidPointerForArgument(Argument *Arg,
 /// parts it can be promoted into.
 static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
                          unsigned MaxElements, bool IsRecursive,
-                         bool IsStoresAllowed,
                          SmallVectorImpl<OffsetAndArgPart> &ArgPartsVec) {
   // Quick exit for unused arguments
   if (Arg->use_empty())
@@ -437,6 +436,12 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   SmallDenseMap<int64_t, ArgPart, 4> ArgParts;
   Align NeededAlign(1);
   uint64_t NeededDerefBytes = 0;
+
+  // And if this is a byval argument we also allow to have the store
+  // instructions. Only handle in such way arguments with specified alignment;
+  // if it's unspecified, the actual alignment of the argument is
+  // target-specific.
+  bool IsStoresAllowed = Arg->getParamByValType() && Arg->getParamAlign();
 
   // Returns None if this load is not based on the argument. Return true if
   // we can promote the load, false otherwise.
@@ -667,46 +672,6 @@ bool ArgumentPromotionPass::isDenselyPacked(Type *Ty, const DataLayout &DL) {
   return true;
 }
 
-/// Checks if the padding bytes of an argument could be accessed.
-static bool canPaddingBeAccessed(Argument *Arg) {
-  assert(Arg->hasByValAttr());
-
-  // Track all the pointers to the argument to make sure they are not captured.
-  SmallPtrSet<Value *, 16> PtrValues;
-  PtrValues.insert(Arg);
-
-  // Track all of the stores.
-  SmallVector<StoreInst *, 16> Stores;
-
-  // Scan through the uses recursively to make sure the pointer is always used
-  // sanely. Note: we don't care whether the parts of the argument are actually
-  // loaded or stored, if we have an improper user (GEP with a non-constant
-  // index for example), we report that the padding can be accessed even if
-  // the user doesn't lead to a load or store instruction.
-  SmallVector<Value *, 16> WorkList(Arg->users());
-  while (!WorkList.empty()) {
-    Value *V = WorkList.pop_back_val();
-    if (isa<GetElementPtrInst>(V) || isa<PHINode>(V)) {
-      auto *GEP = dyn_cast<GetElementPtrInst>(V);
-      if (GEP && !GEP->hasAllConstantIndices())
-        return true;
-      if (PtrValues.insert(V).second)
-        append_range(WorkList, V->users());
-    } else if (StoreInst *Store = dyn_cast<StoreInst>(V)) {
-      Stores.push_back(Store);
-    } else if (!isa<LoadInst>(V)) {
-      return true;
-    }
-  }
-
-  // Check to make sure the pointers aren't captured
-  for (StoreInst *Store : Stores)
-    if (PtrValues.count(Store->getValueOperand()))
-      return true;
-
-  return false;
-}
-
 /// Check if callers and callee agree on how promoted arguments would be
 /// passed.
 static bool areTypesABICompatible(ArrayRef<Type *> Types, const Function &F,
@@ -810,19 +775,8 @@ promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
 
     // If we can promote the pointer to its value.
     SmallVector<OffsetAndArgPart, 4> ArgParts;
-    // And if this is a byval argument we also allow to have the store
-    // instructions as the argument's users if the passed value is densely
-    // packed or if we can prove the padding bytes are never accessed. Only
-    // handle in such way arguments with specified alignment; if it's
-    // unspecified, the actual alignment of the argument is target-specific.
-    Type *ByValTy = PtrArg->getParamByValType();
-    bool IsStoresAllowed =
-        ByValTy && PtrArg->getParamAlign() &&
-        (ArgumentPromotionPass::isDenselyPacked(ByValTy, DL) ||
-         !canPaddingBeAccessed(PtrArg));
 
-    if (findArgParts(PtrArg, DL, AAR, MaxElements, IsRecursive, IsStoresAllowed,
-                     ArgParts)) {
+    if (findArgParts(PtrArg, DL, AAR, MaxElements, IsRecursive, ArgParts)) {
       SmallVector<Type *, 4> Types;
       for (const auto &Pair : ArgParts)
         Types.push_back(Pair.second.Ty);
