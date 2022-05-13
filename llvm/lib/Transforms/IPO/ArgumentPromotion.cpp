@@ -406,8 +406,8 @@ static bool allCallersPassValidPointerForArgument(Argument *Arg,
   // direct callees.
   return all_of(Callee->users(), [&](User *U) {
     CallBase &CB = cast<CallBase>(*U);
-    return isDereferenceableAndAlignedPointer(
-        CB.getArgOperand(Arg->getArgNo()), NeededAlign, Bytes, DL);
+    return isDereferenceableAndAlignedPointer(CB.getArgOperand(Arg->getArgNo()),
+                                              NeededAlign, Bytes, DL);
   });
 }
 
@@ -735,7 +735,7 @@ promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
   // Don't perform argument promotion for naked functions; otherwise we can end
   // up removing parameters that are seemingly 'not used' as they are referred
   // to in the assembly.
-  if(F->hasFnAttribute(Attribute::Naked))
+  if (F->hasFnAttribute(Attribute::Naked))
     return nullptr;
 
   // Make sure that it is local to this module.
