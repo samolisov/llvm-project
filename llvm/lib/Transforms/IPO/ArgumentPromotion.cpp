@@ -56,6 +56,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstrTypes.h"
@@ -75,6 +76,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/Utils/PromoteMemToReg.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -93,9 +95,9 @@ namespace {
 struct ArgPart {
   Type *Ty;
   Align Alignment;
-  /// A representative guaranteed-executed load instruction for use by
+  /// A representative guaranteed-executed load or store instruction for use by
   /// metadata transfer.
-  LoadInst *MustExecLoad;
+  Instruction *MustExecInstr;
 };
 
 using OffsetAndArgPart = std::pair<int64_t, ArgPart>;
@@ -149,11 +151,37 @@ static Value *createByteGEP(IRBuilderBase &IRB, const DataLayout &DL,
   return IRB.CreateBitCast(Ptr, ResElemTy->getPointerTo(AddrSpace));
 }
 
+static AllocaInst *
+createAlloca(IRBuilder<NoFolder> &IRB, const DataLayout &DL,
+             const Argument &Arg,
+             const SmallVectorImpl<OffsetAndArgPart> &ArgParts) {
+  Type *ArgTy;
+  Value *ArgArrSize = nullptr;
+  if (Arg.getParamByValType()) {
+    ArgTy = Arg.getParamByValType();
+  } else {
+    if (Arg.getType()->isOpaquePointerTy()) {
+      ArgTy = Type::getInt8Ty(Arg.getContext());
+      // We will allocate an array of bytes with the size equals to the last
+      // offset (arg parts are sorted by offsets) + the store size for the
+      // type at the last offset. This should be enough.
+      uint64_t ArrSize = ArgParts.back().first +
+                         DL.getTypeStoreSize(ArgParts.back().second.Ty);
+      ArgArrSize =
+          ConstantInt::get(Type::getInt64Ty(Arg.getContext()), ArrSize, false);
+    } else {
+      ArgTy = Arg.getType()->getNonOpaquePointerElementType();
+    }
+  }
+
+  return IRB.CreateAlloca(ArgTy, ArgArrSize, "");
+}
+
 /// DoPromotion - This method actually performs the promotion of the specified
 /// arguments, and returns the new function.  At this point, we know that it's
 /// safe to do so.
 static Function *doPromotion(
-    Function *F,
+    Function *F, DominatorTree &DT, AssumptionCache &AC,
     const DenseMap<Argument *, SmallVector<OffsetAndArgPart, 4>> &ArgsToPromote,
     Optional<function_ref<void(CallBase &OldCS, CallBase &NewCS)>>
         ReplaceCallSite) {
@@ -240,7 +268,7 @@ static Function *doPromotion(
     auto *AI = CB.arg_begin();
     ArgNo = 0;
     for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(); I != E;
-         ++I, ++AI, ++ArgNo)
+         ++I, ++AI, ++ArgNo) {
       if (!ArgsToPromote.count(&*I)) {
         Args.push_back(*AI); // Unmodified argument
         ArgAttrVec.push_back(CallPAL.getParamAttrs(ArgNo));
@@ -252,9 +280,9 @@ static Function *doPromotion(
               Pair.second.Ty,
               createByteGEP(IRB, DL, V, Pair.second.Ty, Pair.first),
               Pair.second.Alignment, V->getName() + ".val");
-          if (Pair.second.MustExecLoad) {
-            LI->setAAMetadata(Pair.second.MustExecLoad->getAAMetadata());
-            LI->copyMetadata(*Pair.second.MustExecLoad,
+          if (Pair.second.MustExecInstr) {
+            LI->setAAMetadata(Pair.second.MustExecInstr->getAAMetadata());
+            LI->copyMetadata(*Pair.second.MustExecInstr,
                              {LLVMContext::MD_range, LLVMContext::MD_nonnull,
                               LLVMContext::MD_dereferenceable,
                               LLVMContext::MD_dereferenceable_or_null,
@@ -264,6 +292,7 @@ static Function *doPromotion(
           ArgAttrVec.push_back(AttributeSet());
         }
       }
+    }
 
     // Push any varargs arguments on the list.
     for (; AI != CB.arg_end(); ++AI, ++ArgNo) {
@@ -313,6 +342,13 @@ static Function *doPromotion(
   // function empty.
   NF->getBasicBlockList().splice(NF->begin(), F->getBasicBlockList());
 
+  IRBuilder<NoFolder> IRB(&NF->begin()->front());
+
+  // We will collect all the new created alloca's to promote them into registers
+  // after the following loop
+  std::vector<AllocaInst *> Allocas;
+  Allocas.reserve(ArgsToPromote.size());
+
   // Loop over the argument list, transferring uses of the old arguments over to
   // the new arguments, also transferring over the names as well.
   Function::arg_iterator I2 = NF->arg_begin();
@@ -334,57 +370,40 @@ static Function *doPromotion(
     if (Arg.use_empty())
       continue;
 
-    SmallDenseMap<int64_t, Argument *> OffsetToArg;
-    for (const auto &Pair : ArgsToPromote.find(&Arg)->second) {
+    // Otherwise, if we promoted this argument, we have to create an alloca in
+    // the callee and store each of the new incoming arguments into the alloca,
+    // what lets the old code (the store instructions if they are allowed
+    // especially) a chance to work as before.
+    assert(Arg.getType()->isPointerTy() &&
+           "Only arguments with a pointer type are promotable");
+    const SmallVectorImpl<OffsetAndArgPart> &ArgParts =
+        ArgsToPromote.find(&Arg)->second;
+    AllocaInst *TheAlloca = createAlloca(IRB, DL, Arg, ArgParts);
+
+    // Add only the promoted elements, so parts from ArgsToPromote
+    for (const auto &Pair : ArgParts) {
+      int64_t Offset = Pair.first;
       Argument &NewArg = *I2++;
-      NewArg.setName(Arg.getName() + "." + Twine(Pair.first) + ".val");
-      OffsetToArg.insert({Pair.first, &NewArg});
+      NewArg.setName(Arg.getName() + "." + Twine(Offset) + ".val");
+      IRB.CreateAlignedStore(&NewArg,
+          createByteGEP(IRB, DL, TheAlloca, Pair.second.Ty, Offset),
+          Pair.second.Alignment, false);
     }
 
-    // Otherwise, if we promoted this argument, then all users are load
-    // instructions (with possible casts and GEPs in between) or store ones if
-    // the byval attribute is used.
-    SmallVector<Value *, 16> Worklist;
-    SmallVector<Instruction *, 16> DeadInsts;
-    append_range(Worklist, Arg.users());
-    while (!Worklist.empty()) {
-      Value *V = Worklist.pop_back_val();
-      if (isa<BitCastInst>(V) || isa<GetElementPtrInst>(V)) {
-        DeadInsts.push_back(cast<Instruction>(V));
-        append_range(Worklist, V->users());
-        continue;
-      }
+    // Anything that used the arg should now use the alloca
+    Arg.replaceAllUsesWith(TheAlloca);
+    TheAlloca->takeName(&Arg);
 
-      if (auto *LI = dyn_cast<LoadInst>(V)) {
-        Value *Ptr = LI->getPointerOperand();
-        APInt Offset(DL.getIndexTypeSizeInBits(Ptr->getType()), 0);
-        Ptr =
-            Ptr->stripAndAccumulateConstantOffsets(DL, Offset,
-                                                   /* AllowNonInbounds */ true);
-        assert(Ptr == &Arg && "Not constant offset from arg?");
-        LI->replaceAllUsesWith(OffsetToArg[Offset.getSExtValue()]);
-        DeadInsts.push_back(LI);
-        continue;
-      }
-
-      if (auto *SI = dyn_cast<StoreInst>(V)) {
-        // Stores are only allowed for byval arguments. This is a job of the
-        // findArgParts function to decide should arguments with stores as
-        // users be eligible for promotion. If a store is an allowed user, it
-        // writes to a temporary (created explicitly or implicitly with the
-        // byval attribute, so the instruction can be removed too).
-        DeadInsts.push_back(SI);
-        continue;
-      }
-
-      llvm_unreachable("Unexpected user");
-    }
-
-    for (Instruction *I : DeadInsts) {
-      I->replaceAllUsesWith(PoisonValue::get(I->getType()));
-      I->eraseFromParent();
+    // Collect the alloca for promotion
+    if (isAllocaPromotable(TheAlloca)) {
+      Allocas.push_back(TheAlloca);
     }
   }
+
+  // And we will be able to call the `promoteMemoryToRegister()` function.
+  // Our earlier checks have ensured that promoteMemoryToRegister() will
+  // succeed.
+  PromoteMemToReg(Allocas, DT, &AC);
 
   return NF;
 }
@@ -443,15 +462,16 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   // target-specific.
   bool IsStoresAllowed = Arg->getParamByValType() && Arg->getParamAlign();
 
-  // Returns None if this load is not based on the argument. Return true if
-  // we can promote the load, false otherwise.
-  auto HandleLoad = [&](LoadInst *LI,
-                        bool GuaranteedToExecute) -> Optional<bool> {
-    // Don't promote volatile or atomic loads.
-    if (!LI->isSimple())
+  // An end user of a pointer argument is a load or store instruction.
+  // Returns None if this load or store is not based on the argument. Return
+  // true if we can promote the instruction, false otherwise.
+  auto HandleEndUser = [&](auto *I, Type *Ty,
+                           bool GuaranteedToExecute) -> Optional<bool> {
+    // Don't promote volatile or atomic instructions.
+    if (!I->isSimple())
       return false;
 
-    Value *Ptr = LI->getPointerOperand();
+    Value *Ptr = I->getPointerOperand();
     APInt Offset(DL.getIndexTypeSizeInBits(Ptr->getType()), 0);
     Ptr = Ptr->stripAndAccumulateConstantOffsets(DL, Offset,
                                                  /* AllowNonInbounds */ true);
@@ -461,7 +481,6 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
     if (Offset.getSignificantBits() >= 64)
       return false;
 
-    Type *Ty = LI->getType();
     TypeSize Size = DL.getTypeStoreSize(Ty);
     // Don't try to promote scalable types.
     if (Size.isScalable())
@@ -474,7 +493,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
 
     int64_t Off = Offset.getSExtValue();
     auto Pair = ArgParts.try_emplace(
-        Off, ArgPart{Ty, LI->getAlign(), GuaranteedToExecute ? LI : nullptr});
+        Off, ArgPart{Ty, I->getAlign(), GuaranteedToExecute ? I : nullptr});
     ArgPart &Part = Pair.first->second;
     bool OffsetNotSeenBefore = Pair.second;
 
@@ -486,10 +505,12 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
       return false;
     }
 
-    // For now, we only support loading one specific type at a given offset.
+    // For now, we only support loading/storing one specific type at a given
+    // offset.
     if (Part.Ty != Ty) {
       LLVM_DEBUG(dbgs() << "ArgPromotion of " << *Arg << " failed: "
-                        << "loaded via both " << *Part.Ty << " and " << *Ty
+                        << (isa<LoadInst>(I) ? "loaded via" : "stored to")
+                        << " both " << *Part.Ty << " and " << *Ty
                         << " at offset " << Off << "\n");
       return false;
     }
@@ -500,30 +521,36 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
     // Note that skipping loads of previously seen offsets is only correct
     // because we only allow a single type for a given offset, which also means
     // that the number of accessed bytes will be the same.
+    // For stores, the lambda is invoked with the GuaranteedToExecute parameter
+    // is set to 'true', so the check will be skipped.
     if (!GuaranteedToExecute &&
-        (OffsetNotSeenBefore || Part.Alignment < LI->getAlign())) {
+        (OffsetNotSeenBefore || Part.Alignment < I->getAlign())) {
       // We won't be able to prove dereferenceability for negative offsets.
       if (Off < 0)
         return false;
 
       // If the offset is not aligned, an aligned base pointer won't help.
-      if (!isAligned(LI->getAlign(), Off))
+      if (!isAligned(I->getAlign(), Off))
         return false;
 
       NeededDerefBytes = std::max(NeededDerefBytes, Off + Size.getFixedValue());
-      NeededAlign = std::max(NeededAlign, LI->getAlign());
+      NeededAlign = std::max(NeededAlign, I->getAlign());
     }
 
-    Part.Alignment = std::max(Part.Alignment, LI->getAlign());
+    Part.Alignment = std::max(Part.Alignment, I->getAlign());
     return true;
   };
 
-  // Look for loads that are guaranteed to execute on entry.
+  // Look for loads and stores that are guaranteed to execute on entry.
   for (Instruction &I : Arg->getParent()->getEntryBlock()) {
+    Optional<bool> Res{};
     if (LoadInst *LI = dyn_cast<LoadInst>(&I))
-      if (Optional<bool> Res = HandleLoad(LI, /* GuaranteedToExecute */ true))
-        if (!*Res)
-          return false;
+      Res = HandleEndUser(LI, LI->getType(), /* GuaranteedToExecute */ true);
+    if (StoreInst *SI = dyn_cast<StoreInst>(&I))
+      Res = HandleEndUser(SI, SI->getValueOperand()->getType(),
+                          /* GuaranteedToExecute */ true);
+    if (Res && !*Res)
+      return false;
 
     if (!isGuaranteedToTransferExecutionToSuccessor(&I))
       break;
@@ -555,15 +582,20 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
     }
 
     if (auto *LI = dyn_cast<LoadInst>(V)) {
-      if (!*HandleLoad(LI, /* GuaranteedToExecute */ false))
+      if (!*HandleEndUser(LI, LI->getType(), /* GuaranteedToExecute */ false))
         return false;
       Loads.push_back(LI);
       continue;
     }
 
     // Stores are allowed for byval arguments
-    if (IsStoresAllowed && isa<StoreInst>(V))
+    if (IsStoresAllowed && isa<StoreInst>(V)) {
+      StoreInst *SI = cast<StoreInst>(V);
+      if (!*HandleEndUser(SI, SI->getValueOperand()->getType(),
+                          /* GuaranteedToExecute */ true))
+        return false;
       continue;
+    }
 
     // Unknown user.
     LLVM_DEBUG(dbgs() << "ArgPromotion of " << *Arg << " failed: "
@@ -592,6 +624,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   // Make sure the parts are non-overlapping.
   // TODO: As we're doing pure load promotion here, overlap should be fine from
   // a correctness perspective. Profitability is less obvious though.
+  // TODO: What about store promotion?
   int64_t Offset = ArgPartsVec[0].first;
   for (const auto &Pair : ArgPartsVec) {
     if (Pair.first < Offset)
@@ -599,6 +632,12 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
 
     Offset = Pair.first + DL.getTypeStoreSize(Pair.second.Ty);
   }
+
+  // If store instructions are allowed, the path from the entry of the function
+  // to each load may be not free of instructions that potentially invalidate
+  // the load, and this is an admissible situation.
+  if (IsStoresAllowed)
+    return true;
 
   // Okay, now we know that the argument is only used by load instructions, and
   // it is safe to unconditionally perform all of them. Use alias analysis to
@@ -693,7 +732,7 @@ static bool areTypesABICompatible(ArrayRef<Type *> Types, const Function &F,
 /// calls the DoPromotion method.
 static Function *
 promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
-                 unsigned MaxElements,
+                 DominatorTree &DT, AssumptionCache &AC, unsigned MaxElements,
                  Optional<function_ref<void(CallBase &OldCS, CallBase &NewCS)>>
                      ReplaceCallSite,
                  const TargetTransformInfo &TTI, bool IsRecursive) {
@@ -791,7 +830,7 @@ promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
   if (ArgsToPromote.empty())
     return nullptr;
 
-  return doPromotion(F, ArgsToPromote, ReplaceCallSite);
+  return doPromotion(F, DT, AC, ArgsToPromote, ReplaceCallSite);
 }
 
 PreservedAnalyses ArgumentPromotionPass::run(LazyCallGraph::SCC &C,
@@ -818,9 +857,11 @@ PreservedAnalyses ArgumentPromotionPass::run(LazyCallGraph::SCC &C,
         return FAM.getResult<AAManager>(F);
       };
 
-      const TargetTransformInfo &TTI = FAM.getResult<TargetIRAnalysis>(OldF);
-      Function *NewF = promoteArguments(&OldF, AARGetter, MaxElements, None,
-                                        TTI, IsRecursive);
+      const auto &TTI = FAM.getResult<TargetIRAnalysis>(OldF);
+      auto &DT = FAM.getResult<DominatorTreeAnalysis>(OldF);
+      auto &AC = FAM.getResult<AssumptionAnalysis>(OldF);
+      Function *NewF = promoteArguments(&OldF, AARGetter, DT, AC, MaxElements,
+                                        None, TTI, IsRecursive);
       if (!NewF)
         continue;
       LocalChange = true;
