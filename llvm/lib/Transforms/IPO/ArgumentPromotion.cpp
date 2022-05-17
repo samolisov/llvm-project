@@ -80,6 +80,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -149,32 +150,6 @@ static Value *createByteGEP(IRBuilderBase &IRB, const DataLayout &DL,
     Ptr = IRB.CreateGEP(IRB.getInt8Ty(), Ptr, IRB.getInt(OrigOffset));
   }
   return IRB.CreateBitCast(Ptr, ResElemTy->getPointerTo(AddrSpace));
-}
-
-static AllocaInst *
-createAlloca(IRBuilder<NoFolder> &IRB, const DataLayout &DL,
-             const Argument &Arg,
-             const SmallVectorImpl<OffsetAndArgPart> &ArgParts) {
-  Type *ArgTy;
-  Value *ArgArrSize = nullptr;
-  if (Arg.getParamByValType()) {
-    ArgTy = Arg.getParamByValType();
-  } else {
-    if (Arg.getType()->isOpaquePointerTy()) {
-      ArgTy = Type::getInt8Ty(Arg.getContext());
-      // We will allocate an array of bytes with the size equals to the last
-      // offset (arg parts are sorted by offsets) + the store size for the
-      // type at the last offset. This should be enough.
-      uint64_t ArrSize = ArgParts.back().first +
-                         DL.getTypeStoreSize(ArgParts.back().second.Ty);
-      ArgArrSize =
-          ConstantInt::get(Type::getInt64Ty(Arg.getContext()), ArrSize, false);
-    } else {
-      ArgTy = Arg.getType()->getNonOpaquePointerElementType();
-    }
-  }
-
-  return IRB.CreateAlloca(ArgTy, ArgArrSize, "");
 }
 
 /// DoPromotion - This method actually performs the promotion of the specified
@@ -342,12 +317,13 @@ static Function *doPromotion(
   // function empty.
   NF->getBasicBlockList().splice(NF->begin(), F->getBasicBlockList());
 
-  IRBuilder<NoFolder> IRB(&NF->begin()->front());
-
-  // We will collect all the new created alloca's to promote them into registers
+  // We will collect all the new created allocas to promote them into registers
   // after the following loop
   std::vector<AllocaInst *> Allocas;
-  Allocas.reserve(ArgsToPromote.size());
+  Allocas.reserve(std::accumulate(ArgsToPromote.begin(), ArgsToPromote.end(),
+                                  0u, [](auto Res, const auto &ArgParts) {
+                                    return Res + ArgParts.second.size();
+                                  }));
 
   // Loop over the argument list, transferring uses of the old arguments over to
   // the new arguments, also transferring over the names as well.
@@ -371,37 +347,98 @@ static Function *doPromotion(
       continue;
 
     // Otherwise, if we promoted this argument, we have to create an alloca in
-    // the callee and store each of the new incoming arguments into the alloca,
-    // what lets the old code (the store instructions if they are allowed
-    // especially) a chance to work as before.
+    // the callee for every promotable part and store each of the new incoming
+    // arguments into the corresponding alloca, what lets the old code (the
+    // store instructions if they are allowed especially) a chance to work as
+    // before.
     assert(Arg.getType()->isPointerTy() &&
            "Only arguments with a pointer type are promotable");
-    const SmallVectorImpl<OffsetAndArgPart> &ArgParts =
-        ArgsToPromote.find(&Arg)->second;
-    AllocaInst *TheAlloca = createAlloca(IRB, DL, Arg, ArgParts);
+
+    IRBuilder<NoFolder> IRB(&NF->begin()->front());
 
     // Add only the promoted elements, so parts from ArgsToPromote
-    for (const auto &Pair : ArgParts) {
+    SmallDenseMap<int64_t, AllocaInst *> OffsetToAlloca;
+    for (const auto &Pair : ArgsToPromote.find(&Arg)->second) {
       int64_t Offset = Pair.first;
-      Argument &NewArg = *I2++;
-      NewArg.setName(Arg.getName() + "." + Twine(Offset) + ".val");
-      IRB.CreateAlignedStore(&NewArg,
-          createByteGEP(IRB, DL, TheAlloca, Pair.second.Ty, Offset),
+      const ArgPart &Part = Pair.second;
+
+      Argument *NewArg = I2++;
+      NewArg->setName(Arg.getName() + "." + Twine(Offset) + ".val");
+
+      AllocaInst *NewAlloca = IRB.CreateAlloca(
+          Part.Ty, nullptr, Arg.getName() + "." + Twine(Offset) + ".allc");
+      IRB.CreateAlignedStore(NewArg,NewAlloca,
           Pair.second.Alignment, false);
+
+      // Collect the alloca to retarget the users to
+      OffsetToAlloca.insert({Offset, NewAlloca});
     }
 
-    // Anything that used the arg should now use the alloca
-    Arg.replaceAllUsesWith(TheAlloca);
-    TheAlloca->takeName(&Arg);
+    // Cleanup the code from the dead instructions: GEPs and BitCasts in between
+    // the original argument and its users: loads and stores. Retarget every
+    // user to the new created alloca.
+    auto GetAlloca = [&](Value *Ptr) {
+      APInt Offset(DL.getIndexTypeSizeInBits(Ptr->getType()), 0);
+      Ptr = Ptr->stripAndAccumulateConstantOffsets(DL, Offset,
+                                                   /* AllowNonInbounds */ true);
+      assert(Ptr == &Arg && "Not constant offset from arg?");
+      return OffsetToAlloca[Offset.getSExtValue()];
+    };
 
-    // Collect the alloca for promotion
-    if (isAllocaPromotable(TheAlloca)) {
-      Allocas.push_back(TheAlloca);
+    SmallVector<Value *, 16> Worklist;
+    SmallVector<Instruction *, 16> DeadInsts;
+    append_range(Worklist, Arg.users());
+    while (!Worklist.empty()) {
+      Value *V = Worklist.pop_back_val();
+      if (isa<BitCastInst>(V) || isa<GetElementPtrInst>(V)) {
+        DeadInsts.push_back(cast<Instruction>(V));
+        append_range(Worklist, V->users());
+        continue;
+      }
+
+      if (auto *LI = dyn_cast<LoadInst>(V)) {
+        Value *Ptr = LI->getPointerOperand();
+        Value *TheAlloca = GetAlloca(Ptr);
+        IRBuilder<NoFolder> LIRB(LI);
+        Instruction *NewLI = LIRB.CreateAlignedLoad(LI->getType(), TheAlloca,
+                                                    LI->getAlign(), "");
+        NewLI->takeName(LI);
+        LI->replaceAllUsesWith(NewLI);
+        DeadInsts.push_back(LI);
+        continue;
+      }
+
+      if (auto *SI = dyn_cast<StoreInst>(V)) {
+        Value *Ptr = SI->getPointerOperand();
+        Value *TheAlloca = GetAlloca(Ptr);
+        IRBuilder<NoFolder> SIRB(SI);
+        Instruction *NewSI = SIRB.CreateAlignedStore(
+            SI->getValueOperand(), TheAlloca, SI->getAlign(), SI->isVolatile());
+        SI->replaceAllUsesWith(NewSI);
+        DeadInsts.push_back(SI);
+        continue;
+      }
+
+      llvm_unreachable("Unexpected user");
+    }
+
+    for (Instruction *I : DeadInsts) {
+      I->replaceAllUsesWith(PoisonValue::get(I->getType()));
+      I->eraseFromParent();
+    }
+
+    // Collect the allocas for promotion
+    for (const auto &Pair : OffsetToAlloca) {
+      if (isAllocaPromotable(Pair.second))
+        Allocas.push_back(Pair.second);
     }
   }
 
-  // And we will be able to call the `promoteMemoryToRegister()` function.
-  // Our earlier checks have ensured that promoteMemoryToRegister() will
+  LLVM_DEBUG(dbgs() << "ARG PROMOTION: " << Allocas.size()
+                    << " alloca(s) are promotable by Mem2Reg\n");
+
+  // And we are able to call the `promoteMemoryToRegister()` function.
+  // Our earlier checks have ensured that PromoteMemToReg() will
   // succeed.
   PromoteMemToReg(Allocas, DT, &AC);
 
@@ -589,12 +626,17 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
     }
 
     // Stores are allowed for byval arguments
-    if (IsStoresAllowed && isa<StoreInst>(V)) {
-      StoreInst *SI = cast<StoreInst>(V);
-      if (!*HandleEndUser(SI, SI->getValueOperand()->getType(),
-                          /* GuaranteedToExecute */ true))
-        return false;
-      continue;
+    StoreInst *SI = dyn_cast<StoreInst>(V);
+    if (IsStoresAllowed && SI) {
+      if (Optional<bool> Res =
+              HandleEndUser(SI, SI->getValueOperand()->getType(),
+                            /* GuaranteedToExecute */ true)) {
+        if (!*Res)
+          return false;
+        continue;
+      }
+      // Only stores TO the argument is allowed, all the other stores are
+      // unknown users
     }
 
     // Unknown user.
