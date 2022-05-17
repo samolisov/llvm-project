@@ -7,7 +7,7 @@
 
 define internal void @f(%struct.ss* byval(%struct.ss) align 8 %b, i32* byval(i32) align 4 %X) nounwind  {
 ; CHECK-LABEL: define {{[^@]+}}@f
-; CHECK-SAME: (i32 [[B_0:%.*]]) #[[ATTR0:[0-9]+]] {
+; CHECK-SAME: (i32 [[B_0:%.*]], i32 [[X:%.*]]) #[[ATTR0:[0-9]+]] {
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    [[TEMP:%.*]] = add i32 [[B_0]], 1
 ; CHECK-NEXT:    ret void
@@ -33,7 +33,8 @@ define i32 @test(i32* %X) {
 ; CHECK-NEXT:    store i64 2, i64* [[TEMP4]], align 4
 ; CHECK-NEXT:    [[S_0:%.*]] = getelementptr [[STRUCT_SS]], %struct.ss* [[S]], i64 0, i32 0
 ; CHECK-NEXT:    [[S_0_VAL:%.*]] = load i32, i32* [[S_0]], align 4
-; CHECK-NEXT:    call void @f(i32 [[S_0_VAL]])
+; CHECK-NEXT:    [[X_VAL:%.*]] = load i32, i32* [[X]], align 4
+; CHECK-NEXT:    call void @f(i32 [[S_0_VAL]], i32 [[X_VAL]])
 ; CHECK-NEXT:    ret i32 0
 ;
 entry:
