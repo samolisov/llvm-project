@@ -80,7 +80,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
-#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -319,11 +318,7 @@ static Function *doPromotion(
 
   // We will collect all the new created allocas to promote them into registers
   // after the following loop
-  std::vector<AllocaInst *> Allocas;
-  Allocas.reserve(std::accumulate(ArgsToPromote.begin(), ArgsToPromote.end(),
-                                  0u, [](auto Res, const auto &ArgParts) {
-                                    return Res + ArgParts.second.size();
-                                  }));
+  SmallVector<AllocaInst *, 4> Allocas;
 
   // Loop over the argument list, transferring uses of the old arguments over to
   // the new arguments, also transferring over the names as well.
@@ -367,23 +362,23 @@ static Function *doPromotion(
 
       AllocaInst *NewAlloca = IRB.CreateAlloca(
           Part.Ty, nullptr, Arg.getName() + "." + Twine(Offset) + ".allc");
-      IRB.CreateAlignedStore(NewArg, NewAlloca, Pair.second.Alignment, false);
+      IRB.CreateAlignedStore(NewArg, NewAlloca, Pair.second.Alignment);
 
       // Collect the alloca to retarget the users to
       OffsetToAlloca.insert({Offset, NewAlloca});
     }
 
-    // Cleanup the code from the dead instructions: GEPs and BitCasts in between
-    // the original argument and its users: loads and stores. Retarget every
-    // user to the new created alloca.
     auto GetAlloca = [&](Value *Ptr) {
       APInt Offset(DL.getIndexTypeSizeInBits(Ptr->getType()), 0);
       Ptr = Ptr->stripAndAccumulateConstantOffsets(DL, Offset,
                                                    /* AllowNonInbounds */ true);
       assert(Ptr == &Arg && "Not constant offset from arg?");
-      return OffsetToAlloca[Offset.getSExtValue()];
+      return OffsetToAlloca.lookup(Offset.getSExtValue());
     };
 
+    // Cleanup the code from the dead instructions: GEPs and BitCasts in between
+    // the original argument and its users: loads and stores. Retarget every
+    // user to the new created alloca.
     SmallVector<Value *, 16> Worklist;
     SmallVector<Instruction *, 16> DeadInsts;
     append_range(Worklist, Arg.users());
@@ -398,9 +393,9 @@ static Function *doPromotion(
       if (auto *LI = dyn_cast<LoadInst>(V)) {
         Value *Ptr = LI->getPointerOperand();
         Value *TheAlloca = GetAlloca(Ptr);
-        IRBuilder<NoFolder> LIRB(LI);
-        Instruction *NewLI = LIRB.CreateAlignedLoad(LI->getType(), TheAlloca,
-                                                    LI->getAlign(), "");
+        IRB.SetInsertPoint(LI);
+        Instruction *NewLI =
+            IRB.CreateAlignedLoad(LI->getType(), TheAlloca, LI->getAlign());
         NewLI->takeName(LI);
         LI->replaceAllUsesWith(NewLI);
         DeadInsts.push_back(LI);
@@ -408,11 +403,12 @@ static Function *doPromotion(
       }
 
       if (auto *SI = dyn_cast<StoreInst>(V)) {
+        assert(!SI->isVolatile() && "Volatile operations can't be promoted.");
         Value *Ptr = SI->getPointerOperand();
         Value *TheAlloca = GetAlloca(Ptr);
-        IRBuilder<NoFolder> SIRB(SI);
-        Instruction *NewSI = SIRB.CreateAlignedStore(
-            SI->getValueOperand(), TheAlloca, SI->getAlign(), SI->isVolatile());
+        IRB.SetInsertPoint(SI);
+        Instruction *NewSI = IRB.CreateAlignedStore(SI->getValueOperand(),
+                                                    TheAlloca, SI->getAlign());
         SI->replaceAllUsesWith(NewSI);
         DeadInsts.push_back(SI);
         continue;
@@ -428,8 +424,9 @@ static Function *doPromotion(
 
     // Collect the allocas for promotion
     for (const auto &Pair : OffsetToAlloca) {
-      if (isAllocaPromotable(Pair.second))
-        Allocas.push_back(Pair.second);
+      assert(isAllocaPromotable(Pair.second) &&
+             "By design, only promotable allocas should be produced.");
+      Allocas.push_back(Pair.second);
     }
   }
 
@@ -478,7 +475,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   if (Arg->use_empty())
     return true;
 
-  // We can only promote this argument if all of the uses are loads at known
+  // We can only promote this argument if all the uses are loads at known
   // offsets.
   //
   // Promoting the argument causes it to be loaded in the caller
@@ -495,11 +492,11 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   Align NeededAlign(1);
   uint64_t NeededDerefBytes = 0;
 
-  // And if this is a byval argument we also allow to have the store
-  // instructions. Only handle in such way arguments with specified alignment;
+  // And if this is a byval argument we also allow to have store instructions.
+  // Only handle in such way arguments with specified alignment;
   // if it's unspecified, the actual alignment of the argument is
   // target-specific.
-  bool IsStoresAllowed = Arg->getParamByValType() && Arg->getParamAlign();
+  bool AreStoresAllowed = Arg->getParamByValType() && Arg->getParamAlign();
 
   // An end user of a pointer argument is a load or store instruction.
   // Returns None if this load or store is not based on the argument. Return
@@ -548,8 +545,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
     // offset.
     if (Part.Ty != Ty) {
       LLVM_DEBUG(dbgs() << "ArgPromotion of " << *Arg << " failed: "
-                        << (isa<LoadInst>(I) ? "loaded via" : "stored to")
-                        << " both " << *Part.Ty << " and " << *Ty
+                        << "accessed as both " << *Part.Ty << " and " << *Ty
                         << " at offset " << Off << "\n");
       return false;
     }
@@ -585,7 +581,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
     Optional<bool> Res{};
     if (LoadInst *LI = dyn_cast<LoadInst>(&I))
       Res = HandleEndUser(LI, LI->getType(), /* GuaranteedToExecute */ true);
-    if (StoreInst *SI = dyn_cast<StoreInst>(&I))
+    else if (StoreInst *SI = dyn_cast<StoreInst>(&I))
       Res = HandleEndUser(SI, SI->getValueOperand()->getType(),
                           /* GuaranteedToExecute */ true);
     if (Res && !*Res)
@@ -629,7 +625,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
 
     // Stores are allowed for byval arguments
     StoreInst *SI = dyn_cast<StoreInst>(V);
-    if (IsStoresAllowed && SI) {
+    if (AreStoresAllowed && SI) {
       if (Optional<bool> Res =
               HandleEndUser(SI, SI->getValueOperand()->getType(),
                             /* GuaranteedToExecute */ true)) {
@@ -665,10 +661,6 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   sort(ArgPartsVec,
        [](const auto &A, const auto &B) { return A.first < B.first; });
 
-  // Make sure the parts are non-overlapping.
-  // TODO: As we're doing pure load promotion here, overlap should be fine from
-  // a correctness perspective. Profitability is less obvious though.
-  // TODO: What about store promotion?
   int64_t Offset = ArgPartsVec[0].first;
   for (const auto &Pair : ArgPartsVec) {
     if (Pair.first < Offset)
@@ -680,7 +672,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   // If store instructions are allowed, the path from the entry of the function
   // to each load may be not free of instructions that potentially invalidate
   // the load, and this is an admissible situation.
-  if (IsStoresAllowed)
+  if (AreStoresAllowed)
     return true;
 
   // Okay, now we know that the argument is only used by load instructions, and
