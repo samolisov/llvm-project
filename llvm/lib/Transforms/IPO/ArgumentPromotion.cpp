@@ -627,7 +627,8 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
 
     // Stores are allowed for byval arguments
     auto *SI = dyn_cast<StoreInst>(V);
-    if (AreStoresAllowed && SI && SI->getValueOperand() != *U) {
+    if (AreStoresAllowed && SI &&
+        U->getOperandNo() == StoreInst::getPointerOperandIndex()) {
       if (!*HandleEndUser(SI, SI->getValueOperand()->getType(),
                           /* GuaranteedToExecute */ false))
         return false;
