@@ -550,16 +550,13 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
       return false;
     }
 
-    // If this is a load and the load is not guaranteed to execute, and we
-    // haven't seen a load or store at this offset before (or it had lower
-    // alignment), then we need to remember that requirement.
-    // Note that skipping loads of previously seen offsets is only correct
-    // because we only allow a single type for a given offset, which also means
-    // that the number of accessed bytes will be the same.
-    //
-    // We aren't going to speculate any stores, so we don't care about the
-    // alignment at all and skip this check.
-    if (isa<LoadInst>(I) && !GuaranteedToExecute &&
+    // If this instruction is not guaranteed to execute, and we haven't seen a
+    // load or store at this offset before (or it had lower alignment), then we
+    // need to remember that requirement.
+    // Note that skipping instructions of previously seen offsets is only
+    // correct because we only allow a single type for a given offset, which
+    // also means that the number of accessed bytes will be the same.
+    if (!GuaranteedToExecute &&
         (OffsetNotSeenBefore || Part.Alignment < I->getAlign())) {
       // We won't be able to prove dereferenceability for negative offsets.
       if (Off < 0)
