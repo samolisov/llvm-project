@@ -362,6 +362,7 @@ static Function *doPromotion(
 
       AllocaInst *NewAlloca = IRB.CreateAlloca(
           Part.Ty, nullptr, Arg.getName() + "." + Twine(Offset) + ".allc");
+      NewAlloca->setAlignment(Pair.second.Alignment);
       IRB.CreateAlignedStore(NewArg, NewAlloca, Pair.second.Alignment);
 
       // Collect the alloca to retarget the users to
