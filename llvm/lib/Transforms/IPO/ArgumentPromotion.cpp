@@ -597,7 +597,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   SmallVector<const Use *, 16> Worklist;
   SmallPtrSet<const Use *, 16> Visited;
   SmallVector<LoadInst *, 16> Loads;
-  auto AppendUses = [&](Value *V) {
+  auto AppendUses = [&](const Value *V) {
     for (const Use &U : V->uses())
       if (Visited.insert(&U).second)
         Worklist.push_back(&U);
@@ -605,19 +605,20 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   AppendUses(Arg);
   while (!Worklist.empty()) {
     const Use *U = Worklist.pop_back_val();
-    if (isa<BitCastInst>(U->getUser())) {
-      AppendUses(U->getUser());
+    Value *V = U->getUser();
+    if (isa<BitCastInst>(V)) {
+      AppendUses(V);
       continue;
     }
 
-    if (auto *GEP = dyn_cast<GetElementPtrInst>(U->getUser())) {
+    if (auto *GEP = dyn_cast<GetElementPtrInst>(V)) {
       if (!GEP->hasAllConstantIndices())
         return false;
-      AppendUses(U->getUser());
+      AppendUses(V);
       continue;
     }
 
-    if (auto *LI = dyn_cast<LoadInst>(U->getUser())) {
+    if (auto *LI = dyn_cast<LoadInst>(V)) {
       if (!*HandleEndUser(LI, LI->getType(), /* GuaranteedToExecute */ false))
         return false;
       Loads.push_back(LI);
@@ -625,22 +626,19 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
     }
 
     // Stores are allowed for byval arguments
-    auto *SI = dyn_cast<StoreInst>(U->getUser());
+    auto *SI = dyn_cast<StoreInst>(V);
     if (AreStoresAllowed && SI && SI->getValueOperand() != *U) {
-      if (Optional<bool> Res =
-              HandleEndUser(SI, SI->getValueOperand()->getType(),
-                            /* GuaranteedToExecute */ false)) {
-        if (!*Res)
-          return false;
-        continue;
-      }
+      if (!*HandleEndUser(SI, SI->getValueOperand()->getType(),
+                          /* GuaranteedToExecute */ false))
+        return false;
+      continue;
       // Only stores TO the argument is allowed, all the other stores are
       // unknown users
     }
 
     // Unknown user.
     LLVM_DEBUG(dbgs() << "ArgPromotion of " << *Arg << " failed: "
-                      << "unknown user " << *U->getUser() << "\n");
+                      << "unknown user " << *V << "\n");
     return false;
   }
 
