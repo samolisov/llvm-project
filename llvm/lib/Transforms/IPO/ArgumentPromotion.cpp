@@ -550,15 +550,16 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
       return false;
     }
 
-    // If this load is not guaranteed to execute, and we haven't seen a load at
-    // this offset before (or it had lower alignment), then we need to remember
-    // that requirement.
+    // If this is a load and the load is not guaranteed to execute, and we
+    // haven't seen a load or store at this offset before (or it had lower
+    // alignment), then we need to remember that requirement.
     // Note that skipping loads of previously seen offsets is only correct
     // because we only allow a single type for a given offset, which also means
     // that the number of accessed bytes will be the same.
-    // For stores, the lambda is invoked with the GuaranteedToExecute parameter
-    // is set to 'true', so the check will be skipped.
-    if (!GuaranteedToExecute &&
+    //
+    // We aren't going to speculate any stores, so we don't care about the
+    // alignment at all and skip this check.
+    if (isa<LoadInst>(I) && !GuaranteedToExecute &&
         (OffsetNotSeenBefore || Part.Alignment < I->getAlign())) {
       // We won't be able to prove dereferenceability for negative offsets.
       if (Off < 0)
@@ -593,30 +594,30 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
 
   // Now look at all loads of the argument. Remember the load instructions
   // for the aliasing check below.
-  SmallVector<Value *, 16> Worklist;
-  SmallPtrSet<Value *, 16> Visited;
+  SmallVector<const Use *, 16> Worklist;
+  SmallPtrSet<const Use *, 16> Visited;
   SmallVector<LoadInst *, 16> Loads;
-  auto AppendUsers = [&](Value *V) {
-    for (User *U : V->users())
-      if (Visited.insert(U).second)
-        Worklist.push_back(U);
+  auto AppendUses = [&](Value *V) {
+    for (const Use &U : V->uses())
+      if (Visited.insert(&U).second)
+        Worklist.push_back(&U);
   };
-  AppendUsers(Arg);
+  AppendUses(Arg);
   while (!Worklist.empty()) {
-    Value *V = Worklist.pop_back_val();
-    if (isa<BitCastInst>(V)) {
-      AppendUsers(V);
+    const Use *U = Worklist.pop_back_val();
+    if (isa<BitCastInst>(U->getUser())) {
+      AppendUses(U->getUser());
       continue;
     }
 
-    if (auto *GEP = dyn_cast<GetElementPtrInst>(V)) {
+    if (auto *GEP = dyn_cast<GetElementPtrInst>(U->getUser())) {
       if (!GEP->hasAllConstantIndices())
         return false;
-      AppendUsers(V);
+      AppendUses(U->getUser());
       continue;
     }
 
-    if (auto *LI = dyn_cast<LoadInst>(V)) {
+    if (auto *LI = dyn_cast<LoadInst>(U->getUser())) {
       if (!*HandleEndUser(LI, LI->getType(), /* GuaranteedToExecute */ false))
         return false;
       Loads.push_back(LI);
@@ -624,11 +625,11 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
     }
 
     // Stores are allowed for byval arguments
-    StoreInst *SI = dyn_cast<StoreInst>(V);
-    if (AreStoresAllowed && SI) {
+    auto *SI = dyn_cast<StoreInst>(U->getUser());
+    if (AreStoresAllowed && SI && SI->getValueOperand() != *U) {
       if (Optional<bool> Res =
               HandleEndUser(SI, SI->getValueOperand()->getType(),
-                            /* GuaranteedToExecute */ true)) {
+                            /* GuaranteedToExecute */ false)) {
         if (!*Res)
           return false;
         continue;
@@ -639,7 +640,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
 
     // Unknown user.
     LLVM_DEBUG(dbgs() << "ArgPromotion of " << *Arg << " failed: "
-                      << "unknown user " << *V << "\n");
+                      << "unknown user " << *U->getUser() << "\n");
     return false;
   }
 
