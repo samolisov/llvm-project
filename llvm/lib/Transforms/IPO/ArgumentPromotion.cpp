@@ -155,7 +155,8 @@ static Value *createByteGEP(IRBuilderBase &IRB, const DataLayout &DL,
 /// arguments, and returns the new function.  At this point, we know that it's
 /// safe to do so.
 static Function *doPromotion(
-    Function *F, AssumptionCache &AC,
+    Function *F, function_ref<DominatorTree &(Function &F)> DTGetter,
+    AssumptionCache &AC,
     const DenseMap<Argument *, SmallVector<OffsetAndArgPart, 4>> &ArgsToPromote,
     Optional<function_ref<void(CallBase &OldCS, CallBase &NewCS)>>
         ReplaceCallSite) {
@@ -438,8 +439,7 @@ static Function *doPromotion(
     // And we are able to call the `promoteMemoryToRegister()` function.
     // Our earlier checks have ensured that PromoteMemToReg() will
     // succeed.
-    DominatorTree DT(*NF);
-    PromoteMemToReg(Allocas, DT, &AC);
+    PromoteMemToReg(Allocas, DTGetter(*NF), &AC);
   }
 
   return NF;
@@ -766,6 +766,7 @@ static bool areTypesABICompatible(ArrayRef<Type *> Types, const Function &F,
 /// calls the DoPromotion method.
 static Function *
 promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
+                 function_ref<DominatorTree &(Function &F)> DTGetter,
                  AssumptionCache &AC, unsigned MaxElements,
                  Optional<function_ref<void(CallBase &OldCS, CallBase &NewCS)>>
                      ReplaceCallSite,
@@ -864,7 +865,7 @@ promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
   if (ArgsToPromote.empty())
     return nullptr;
 
-  return doPromotion(F, AC, ArgsToPromote, ReplaceCallSite);
+  return doPromotion(F, DTGetter, AC, ArgsToPromote, ReplaceCallSite);
 }
 
 PreservedAnalyses ArgumentPromotionPass::run(LazyCallGraph::SCC &C,
@@ -891,10 +892,15 @@ PreservedAnalyses ArgumentPromotionPass::run(LazyCallGraph::SCC &C,
         return FAM.getResult<AAManager>(F);
       };
 
+      auto DTGetter = [&](Function &F) -> DominatorTree & {
+        assert(&F != &OldF && "Called with the obsolete function!");
+        return FAM.getResult<DominatorTreeAnalysis>(F);
+      };
+
       const auto &TTI = FAM.getResult<TargetIRAnalysis>(OldF);
       auto &AC = FAM.getResult<AssumptionAnalysis>(OldF);
-      Function *NewF = promoteArguments(&OldF, AARGetter, AC, MaxElements, None,
-                                        TTI, IsRecursive);
+      Function *NewF = promoteArguments(&OldF, AARGetter, DTGetter, AC,
+                                        MaxElements, None, TTI, IsRecursive);
       if (!NewF)
         continue;
       LocalChange = true;
