@@ -659,6 +659,7 @@ static bool findArgParts(Argument *Arg, const DataLayout &DL, AAResults &AAR,
   sort(ArgPartsVec,
        [](const auto &A, const auto &B) { return A.first < B.first; });
 
+  // Make sure the parts are non-overlapping.
   int64_t Offset = ArgPartsVec[0].first;
   for (const auto &Pair : ArgPartsVec) {
     if (Pair.first < Offset)
