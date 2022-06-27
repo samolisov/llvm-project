@@ -394,25 +394,14 @@ static Function *doPromotion(
 
       if (auto *LI = dyn_cast<LoadInst>(V)) {
         Value *Ptr = LI->getPointerOperand();
-        Value *TheAlloca = GetAlloca(Ptr);
-        IRB.SetInsertPoint(LI);
-        Instruction *NewLI =
-            IRB.CreateAlignedLoad(LI->getType(), TheAlloca, LI->getAlign());
-        NewLI->takeName(LI);
-        LI->replaceAllUsesWith(NewLI);
-        DeadInsts.push_back(LI);
+        LI->setOperand(LoadInst::getPointerOperandIndex(), GetAlloca(Ptr));
         continue;
       }
 
       if (auto *SI = dyn_cast<StoreInst>(V)) {
         assert(!SI->isVolatile() && "Volatile operations can't be promoted.");
         Value *Ptr = SI->getPointerOperand();
-        Value *TheAlloca = GetAlloca(Ptr);
-        IRB.SetInsertPoint(SI);
-        Instruction *NewSI = IRB.CreateAlignedStore(SI->getValueOperand(),
-                                                    TheAlloca, SI->getAlign());
-        SI->replaceAllUsesWith(NewSI);
-        DeadInsts.push_back(SI);
+        SI->setOperand(StoreInst::getPointerOperandIndex(), GetAlloca(Ptr));
         continue;
       }
 
