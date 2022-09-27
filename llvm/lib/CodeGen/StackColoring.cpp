@@ -616,18 +616,31 @@ bool StackColoring::isLifetimeStartOrEnd(const MachineInstr &MI,
   if (MI.getOpcode() == TargetOpcode::LIFETIME_START ||
       MI.getOpcode() == TargetOpcode::LIFETIME_END) {
     int Slot = getStartOrEndSlot(MI);
+    // TODO remove dbgs()
+    dbgs() << "--- isLifetimeStartOrEnd, Slot: " << Slot
+           << ", LifetimeStartOnFirstUse: " << LifetimeStartOnFirstUse
+           << ", ProtectFromEscapedAllocas: " << ProtectFromEscapedAllocas
+           << '\n';
     if (Slot < 0)
       return false;
-    if (!InterestingSlots.test(Slot))
+    if (!InterestingSlots.test(Slot)) {
+      // TODO remove dbgs
+      dbgs() << "--- isLifetimeStartOrEnd, Slot is not in interested slots\n";
       return false;
+    }
     Slots.push_back(Slot);
     if (MI.getOpcode() == TargetOpcode::LIFETIME_END) {
       Start = false;
       return true;
     }
     if (!applyFirstUse(Slot)) {
+      // TODO remove dbgs
+      dbgs() << "--- isLifefineStartOrEnd, applyFirstUse returns false\n";
       Start = true;
       return true;
+    } else {
+      // TODO remove dbgs
+      dbgs() << "--- isLifefineStartOrEnd, applyFirstUse returns true, do nothing\n";
     }
   } else if (LifetimeStartOnFirstUse && !ProtectFromEscapedAllocas) {
     if (!MI.isDebugInstr()) {
@@ -638,12 +651,18 @@ bool StackColoring::isLifetimeStartOrEnd(const MachineInstr &MI,
         int Slot = MO.getIndex();
         if (Slot < 0)
           continue;
+        // TODO remove dbgs
+        dbgs() << "--- isLifefineStartOrEnd, testing Slot " << Slot << "\n";
         if (InterestingSlots.test(Slot) && applyFirstUse(Slot)) {
+          // TODO remove dbgs
+          dbgs() << "--- isLifefineStartOrEnd, Slot " << Slot << " is interesting and applyFirstUse, return true\n";
           Slots.push_back(Slot);
           Found = true;
         }
       }
       if (Found) {
+        // TODO remove dbgs
+        dbgs() << "--- isLifefineStartOrEnd, Found, Start = true, return true\n";
         Start = true;
         return true;
       }
@@ -768,6 +787,9 @@ unsigned StackColoring::collectMarkers(unsigned NumSlot) {
       bool Start = false;
       Slots.clear();
       if (isLifetimeStartOrEnd(MI, Slots, Start)) {
+        // TODO remove dbgs()
+        dbgs() << "-- collectMarkers(), isLifetimeStartOrEnd: true, Start: "
+               << Start << "\n";
         if (!Start) {
           assert(Slots.size() == 1 && "unexpected: MI ends multiple slots");
           int Slot = Slots[0];
@@ -873,14 +895,33 @@ void StackColoring::calculateLiveIntervals(unsigned NumSlots) {
       Starts[Pos] = Indexes->getMBBStartIdx(&MBB);
     }
 
+    // TODO remove dbgs
+    dbgs() << "Initial, Starts:\n";
+    for (auto &&SI : Starts) {
+      SI.dump();
+    }
+    dbgs() << '\n';
+
     // Create the interval for the basic blocks containing lifetime begin/end.
     for (const MachineInstr &MI : MBB) {
       SmallVector<int, 4> Slots;
       bool IsStart = false;
-      if (!isLifetimeStartOrEnd(MI, Slots, IsStart))
+      // TODO remove dbgs()
+      if (!isLifetimeStartOrEnd(MI, Slots, IsStart)) {
+        dbgs() << "MI: " << MI
+               << ", isLifetimeStartOrEnd: false, IsStart: " << IsStart << ", continue\n";
         continue;
+      }
+      // TODO remove dbgs()
+      dbgs() << "MI: " << MI
+             << ", isLifetimeStartOrEnd: true, IsStart: " << IsStart << "\n";
       SlotIndex ThisIndex = Indexes->getInstructionIndex(MI);
+      // TODO remove dbgs()
+      dbgs() << "ThisIndex:\n";
+      ThisIndex.dump();
       for (auto Slot : Slots) {
+        // TODO remove dbgs()
+        dbgs() << "for slot " << Slot << '\n';
         if (IsStart) {
           // If a slot is already definitely in use, we don't have to emit
           // a new start marker because there is already a pre-existing
@@ -892,8 +933,14 @@ void StackColoring::calculateLiveIntervals(unsigned NumSlots) {
           if (!Starts[Slot].isValid())
             Starts[Slot] = ThisIndex;
         } else {
+          // TODO remove dbgs()
+          dbgs() << "Slot: " << Slot << ", IsStart: " << IsStart
+                 << ", Starts[Slot].isValid: " << Starts[Slot].isValid()
+                 << '\n';
           if (Starts[Slot].isValid()) {
             VNInfo *VNI = Intervals[Slot]->getValNumInfo(0);
+            // TODO remove dbgs()
+            dbgs() << "adding a segment to Intervals[" << Slot << "]" << '\n';
             Intervals[Slot]->addSegment(
                 LiveInterval::Segment(Starts[Slot], ThisIndex, VNI));
             Starts[Slot] = SlotIndex(); // Invalidate the start index
@@ -904,12 +951,18 @@ void StackColoring::calculateLiveIntervals(unsigned NumSlots) {
     }
 
     // Finish up started segments
+    // TODO remove dbgs()
+    dbgs() << "Finishing up started segments\n";
     for (unsigned I = 0; I < NumSlots; ++I) {
+      // TODO remove dbgs()
+      dbgs() << "I: " << I << ", Starts[I].isValid: " << Starts[I].isValid()
+             << '\n';
       if (!Starts[I].isValid())
         continue;
 
       SlotIndex EndIdx = Indexes->getMBBEndIdx(&MBB);
       VNInfo *VNI = Intervals[I]->getValNumInfo(0);
+      dbgs() << "adding a segment to Intervals[ " << I << "]" << '\n';
       Intervals[I]->addSegment(LiveInterval::Segment(Starts[I], EndIdx, VNI));
     }
   }
@@ -1218,6 +1271,9 @@ bool StackColoring::runOnMachineFunction(MachineFunction &Func) {
   LiveStarts.clear();
   VNInfoAllocator.Reset();
 
+  // TODO remove dbgs()
+  dbgs() << "-- Num of fixed slots: " << MFI->getNumFixedObjects() << '\n';
+
   unsigned NumSlots = MFI->getObjectIndexEnd();
 
   // If there are no stack slots then there are no markers to remove.
@@ -1244,6 +1300,12 @@ bool StackColoring::runOnMachineFunction(MachineFunction &Func) {
 
   LLVM_DEBUG(dbgs() << "Total Stack size: " << TotalSize << " bytes\n\n");
 
+  // TODO remove dbgs
+  dbgs() << "Before skipping, NumMarkers: " << NumMarkers
+         << ", TotalSize: " << TotalSize
+         << ", DisableColoring: " << DisableColoring << ", skipFunction ("
+         << Func.getName() << "): " << skipFunction(Func.getFunction()) << '\n';
+
   // Don't continue because there are not enough lifetime markers, or the
   // stack is too small, or we are told not to optimize the slots.
   if (NumMarkers < 2 || TotalSize < 16 || DisableColoring ||
@@ -1253,23 +1315,47 @@ bool StackColoring::runOnMachineFunction(MachineFunction &Func) {
   }
 
   for (unsigned I = 0; I < NumSlots; ++I) {
+    // TODO remove dbgs()
+    dbgs() << "Phorming LiveIntervals for I: " << I << "\n";
+    dbgs() << "Dump of zero index:\n";
+    Indexes->getZeroIndex().dump();
     std::unique_ptr<LiveInterval> LI = std::make_unique<LiveInterval>(I, 0);
     LI->getNextValue(Indexes->getZeroIndex(), VNInfoAllocator);
+    // TODO remove dbgs()
+    dbgs() << "I: " << I << ", LI size: " << LI->size() << '\n';
     Intervals.push_back(std::move(LI));
     SortedSlots.push_back(I);
   }
 
   // Calculate the liveness of each block.
   calculateLocalLiveness();
+  // TODO remove dbgs
+  dbgs() << "-- after calculateLocalLiveness()\n";
+  for (unsigned I = 0; I < NumSlots; ++I) {
+    // TODO remove dbgs()
+    dbgs() << "I: " << I << ", SortedSlots[I]: " << SortedSlots[I]
+           << ", Intervals[SortedSlots[I]]->size: "
+           << Intervals[SortedSlots[I]]->size() << '\n';
+  }
   LLVM_DEBUG(dbgs() << "Dataflow iterations: " << NumIterations << "\n");
   LLVM_DEBUG(dump());
 
   // Propagate the liveness information.
   calculateLiveIntervals(NumSlots);
+  // TODO remove dbgs
+  dbgs() << "-- after calculateLiveIntervals()\n"; // 0, SortedSlots[0]: 0, Intervals->size: 1 - here!
+  for (unsigned I = 0; I < NumSlots; ++I) {
+    // TODO remove dbgs()
+    dbgs() << "I: " << I << ", SortedSlots[I]: " << SortedSlots[I]
+           << ", Intervals[SortedSlots[I]]->size: "
+           << Intervals[SortedSlots[I]]->size() << '\n';
+  }
   LLVM_DEBUG(dumpIntervals());
 
   // Search for allocas which are used outside of the declared lifetime
   // markers.
+  // TODO remove dbg
+  dbgs() << "Is protected from escaped allocas? " << ProtectFromEscapedAllocas << '\n';
   if (ProtectFromEscapedAllocas)
     removeInvalidSlotRanges();
 
@@ -1280,6 +1366,10 @@ bool StackColoring::runOnMachineFunction(MachineFunction &Func) {
 
   // Do not bother looking at empty intervals.
   for (unsigned I = 0; I < NumSlots; ++I) {
+    // TODO remove dbgs()
+    dbgs() << "I: " << I << ", SortedSlots[I]: " << SortedSlots[I]
+           << ", Intervals[SortedSlots[I]]->size: "
+           << Intervals[SortedSlots[I]]->size() << '\n';
     if (Intervals[SortedSlots[I]]->empty())
       SortedSlots[I] = -1;
   }
@@ -1309,15 +1399,32 @@ bool StackColoring::runOnMachineFunction(MachineFunction &Func) {
   while (Changed) {
     Changed = false;
     for (unsigned I = 0; I < NumSlots; ++I) {
-      if (SortedSlots[I] == -1)
+      if (SortedSlots[I] == -1) {
+        // TODO remove dbgs
+        dbgs() << "I: " << I << ", SortedSlots[I]: -1, continue\n";
         continue;
+      }
+      // TODO remove dbgs
+      dbgs() << "I: " << I << ", SortedSlots[I]: " << SortedSlots[I] << '\n';
 
       for (unsigned J = I + 1; J < NumSlots; ++J) {
-        if (SortedSlots[J] == -1)
+        if (SortedSlots[J] == -1) {
+          // TODO remove dbgs
+          dbgs() << "J: " << J << ", SortedSlots[J]: -1, continue\n";
           continue;
+        }
+
+        // TODO remove dbgs
+        dbgs() << "I: " << I << ", SortedSlots[I]: " << SortedSlots[I]
+               << ", J: " << J << ", SortedSlots[J]: " << SortedSlots[J]
+               << ", merging...\n";
 
         int FirstSlot = SortedSlots[I];
         int SecondSlot = SortedSlots[J];
+
+        // TODO remove dbgs
+        dbgs() << "First Stack ID: #" << MFI->getStackID(FirstSlot)
+               << ", Second Stack ID: #" << MFI->getStackID(SecondSlot) << '\n';
 
         // Objects with different stack IDs cannot be merged.
         if (MFI->getStackID(FirstSlot) != MFI->getStackID(SecondSlot))
@@ -1331,6 +1438,11 @@ bool StackColoring::runOnMachineFunction(MachineFunction &Func) {
 
         // Merge disjoint slots. This is a little bit tricky - see the
         // Implementation Notes section for an explanation.
+        // TODO remove dbgs
+        dbgs() << "First->isLiveAtIndexes(SecondS): "
+               << First->isLiveAtIndexes(SecondS)
+               << ", Second->isLiveAtIndexes(FirstS): "
+               << Second->isLiveAtIndexes(FirstS) << '\n';
         if (!First->isLiveAtIndexes(SecondS) &&
             !Second->isLiveAtIndexes(FirstS)) {
           Changed = true;
