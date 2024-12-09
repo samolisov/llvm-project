@@ -298,3 +298,11 @@ int main(int argc, char **argv) {
 
   return 0;
 }
+
+/*
+ * To manually compile and link:
+ * $ ~/dev/llvm-19/bin/clang++ -o regalloc-user.o -c -fno-rtti -fno-exceptions -I ~/dev/llvm/llvm/include/ -I ~/dev/llvm/llvm/build/rel/include/ ~/dev/llvm/llvm/examples/RegAllocUser/regalloc-user.cpp
+ *
+ * $ ~/dev/llvm-19/bin/clang++ -o regallocuser regalloc-user.o lib/libLLVMCore.a  lib/libLLVMSupport.a  lib/libLLVMMIRParser.a  lib/libLLVMPasses.a  lib/libLLVMX86CodeGen.a  lib/libLLVMX86Desc.a  lib/libLLVMX86Info.a  -lpthread  lib/libLLVMCoroutines.a  lib/libLLVMHipStdPar.a  lib/libLLVMipo.a  lib/libLLVMFrontendOpenMP.a  lib/libLLVMFrontendOffloading.a  lib/libLLVMLinker.a  lib/libLLVMVectorize.a  lib/libLLVMSandboxIR.a  lib/libLLVMMCDisassembler.a  lib/libLLVMCFGuard.a  lib/libLLVMIRPrinter.a  lib/libLLVMInstrumentation.a  lib/libLLVMAsmPrinter.a  lib/libLLVMGlobalISel.a  lib/libLLVMSelectionDAG.a  lib/libLLVMCodeGen.a  lib/libLLVMObjCARCOpts.a  lib/libLLVMScalarOpts.a  lib/libLLVMAggressiveInstCombine.a  lib/libLLVMInstCombine.a  lib/libLLVMCGData.a  lib/libLLVMBitWriter.a  lib/libLLVMCodeGenTypes.a  lib/libLLVMTarget.a  lib/libLLVMTransformUtils.a  lib/libLLVMAnalysis.a  lib/libLLVMProfileData.a  lib/libLLVMSymbolize.a  lib/libLLVMDebugInfoDWARF.a  lib/libLLVMDebugInfoPDB.a  lib/libLLVMDebugInfoCodeView.a  lib/libLLVMDebugInfoMSF.a  lib/libLLVMDebugInfoBTF.a  lib/libLLVMObject.a  lib/libLLVMIRReader.a  lib/libLLVMAsmParser.a  lib/libLLVMBitReader.a  lib/libLLVMCore.a  lib/libLLVMRemarks.a  lib/libLLVMBitstreamReader.a  lib/libLLVMMCParser.a  lib/libLLVMMC.a  lib/libLLVMTextAPI.a  lib/libLLVMBinaryFormat.a  lib/libLLVMTargetParser.a  lib/libLLVMSupport.a  lib/libLLVMDemangle.a  -lrt  -ldl  -lpthread  -lm  /usr/lib/x86_64-linux-gnu/libz.so
+ * (so, 52 LLVM libraries are needed!)
+ */
