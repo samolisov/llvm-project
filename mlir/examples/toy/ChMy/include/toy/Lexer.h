@@ -1,4 +1,4 @@
-//===--- Lexer.h -  --------------------*- C++ -*-===//
+//===--- Lexer.h - Lexer for the Toy language -------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -112,7 +112,12 @@ private:
     // The current line buffer should not be empty unless it is the end of file.
     if (curLineBuffer.empty())
       return EOF;
-    ++curCol;
+    ++curCol; // unless we have an empty curLineBuffer, curCol always starts
+              // from 1. Even though we reset curCol to 0 after the reading of
+              // the '\n' character, unless the buffer is empty, curColl will
+              // then be updated to 1 again.
+    // Amazing! How to "add" \n at the *beginning* of whatever was passed even
+    // before the empty line. So, currentLocation.line always starts from 1.
     auto nextchar = curLineBuffer.front();
     curLineBuffer = curLineBuffer.drop_front();
     if (curLineBuffer.empty())

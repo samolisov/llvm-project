@@ -1,4 +1,4 @@
-//===--- Dialect.h - Dialect definition for the Toy IR ----------*- C++ -*-===//
+//===- Dialect.h - Dialect definition for the Toy IR ------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
