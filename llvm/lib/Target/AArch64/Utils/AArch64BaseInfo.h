@@ -53,10 +53,6 @@ inline static unsigned getWRegFromXReg(unsigned Reg) {
   case AArch64::X21: return AArch64::W21;
   case AArch64::X22: return AArch64::W22;
   case AArch64::X23: return AArch64::W23;
-  case AArch64::X24: return AArch64::W24;
-  case AArch64::X25: return AArch64::W25;
-  case AArch64::X26: return AArch64::W26;
-  case AArch64::X27: return AArch64::W27;
   case AArch64::X28: return AArch64::W28;
   case AArch64::FP: return AArch64::W29;
   case AArch64::LR: return AArch64::W30;
@@ -93,10 +89,6 @@ inline static unsigned getXRegFromWReg(unsigned Reg) {
   case AArch64::W21: return AArch64::X21;
   case AArch64::W22: return AArch64::X22;
   case AArch64::W23: return AArch64::X23;
-  case AArch64::W24: return AArch64::X24;
-  case AArch64::W25: return AArch64::X25;
-  case AArch64::W26: return AArch64::X26;
-  case AArch64::W27: return AArch64::X27;
   case AArch64::W28: return AArch64::X28;
   case AArch64::W29: return AArch64::FP;
   case AArch64::W30: return AArch64::LR;
@@ -118,9 +110,9 @@ inline static unsigned getXRegFromXRegTuple(unsigned RegTuple) {
   case AArch64::X12_X13_X14_X15_X16_X17_X18_X19: return AArch64::X12;
   case AArch64::X14_X15_X16_X17_X18_X19_X20_X21: return AArch64::X14;
   case AArch64::X16_X17_X18_X19_X20_X21_X22_X23: return AArch64::X16;
-  case AArch64::X18_X19_X20_X21_X22_X23_X24_X25: return AArch64::X18;
-  case AArch64::X20_X21_X22_X23_X24_X25_X26_X27: return AArch64::X20;
-  case AArch64::X22_X23_X24_X25_X26_X27_X28_FP: return AArch64::X22;
+  case AArch64::X18_X19_X20_X21_X22_X23_X28_FP: return AArch64::X18;
+  case AArch64::X20_X21_X22_X23_X28_FP_LR_XZR: return AArch64::X20;
+  case AArch64::X22_X23_X28_FP_LR_XZR_X0_X1: return AArch64::X22;
   }
   // For anything else, return it unchanged.
   return RegTuple;

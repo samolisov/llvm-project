@@ -5328,7 +5328,6 @@ bool AArch64AsmParser::validateInstruction(MCInst &Inst, SMLoc &IDLoc,
         if ((Reg == AArch64::W13 || Reg == AArch64::X13) ||
             (Reg == AArch64::W14 || Reg == AArch64::X14) ||
             (Reg == AArch64::W23 || Reg == AArch64::X23) ||
-            (Reg == AArch64::W24 || Reg == AArch64::X24) ||
             (Reg == AArch64::W28 || Reg == AArch64::X28) ||
             (Reg >= AArch64::Q16 && Reg <= AArch64::Q31) ||
             (Reg >= AArch64::D16 && Reg <= AArch64::D31) ||

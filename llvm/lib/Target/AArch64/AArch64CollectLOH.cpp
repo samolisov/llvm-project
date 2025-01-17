@@ -251,15 +251,19 @@ static bool supportLoadFromLiteral(const MachineInstr &MI) {
 }
 
 /// Number of GPR registers traked by mapRegToGPRIndex()
-static const unsigned N_GPR_REGS = 31;
-/// Map register number to index from 0-30.
+static const unsigned N_GPR_REGS = 27;
+/// Map register number to index from 0-30 (excluding 24, 25, 26, 27).
 static int mapRegToGPRIndex(MCPhysReg Reg) {
   static_assert(AArch64::X28 - AArch64::X0 + 3 == N_GPR_REGS, "Number of GPRs");
   static_assert(AArch64::W30 - AArch64::W0 + 1 == N_GPR_REGS, "Number of GPRs");
-  if (AArch64::X0 <= Reg && Reg <= AArch64::X28)
+  if (AArch64::X0 <= Reg && Reg <= AArch64::X23)
     return Reg - AArch64::X0;
-  if (AArch64::W0 <= Reg && Reg <= AArch64::W30)
+  if (AArch64::X28 == Reg)
+    return 28;
+  if (AArch64::W0 <= Reg && Reg <= AArch64::W23)
     return Reg - AArch64::W0;
+  if (AArch64::W28 <= Reg && Reg <= AArch64::W30)
+    return Reg - AArch64::W0 + 4; // Hack! 4 registers (w24, w25, w26, w27) are skipped.
   // TableGen gives "FP" and "LR" an index not adjacent to X28 so we have to
   // handle them as special cases.
   if (Reg == AArch64::FP)

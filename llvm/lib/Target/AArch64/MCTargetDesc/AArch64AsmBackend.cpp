@@ -563,9 +563,9 @@ enum CompactUnwindEncodings {
   /// Frame register pair encodings.
   UNWIND_ARM64_FRAME_X19_X20_PAIR = 0x00000001,
   UNWIND_ARM64_FRAME_X21_X22_PAIR = 0x00000002,
-  UNWIND_ARM64_FRAME_X23_X24_PAIR = 0x00000004,
-  UNWIND_ARM64_FRAME_X25_X26_PAIR = 0x00000008,
-  UNWIND_ARM64_FRAME_X27_X28_PAIR = 0x00000010,
+  UNWIND_ARM64_FRAME_X18_X19_PAIR = 0x00000004, // Hack! Replace x23_x24 with x18_x19
+  UNWIND_ARM64_FRAME_X20_X21_PAIR = 0x00000008, // Hack! Replace x25_x26 with x20_x21
+  UNWIND_ARM64_FRAME_X22_X23_PAIR = 0x00000010, // Hack! Replace x27_x28 with x22_x23
   UNWIND_ARM64_FRAME_D8_D9_PAIR = 0x00000100,
   UNWIND_ARM64_FRAME_D10_D11_PAIR = 0x00000200,
   UNWIND_ARM64_FRAME_D12_D13_PAIR = 0x00000400,
@@ -691,9 +691,9 @@ public:
 
         // X19/X20 pair = 0x00000001,
         // X21/X22 pair = 0x00000002,
-        // X23/X24 pair = 0x00000004,
-        // X25/X26 pair = 0x00000008,
-        // X27/X28 pair = 0x00000010
+        // X18/X19 pair = 0x00000004,
+        // X20/X21 pair = 0x00000008,
+        // X22/X23 pair = 0x00000010
         Reg1 = getXRegFromWReg(Reg1);
         Reg2 = getXRegFromWReg(Reg2);
 
@@ -703,15 +703,15 @@ public:
         else if (Reg1 == AArch64::X21 && Reg2 == AArch64::X22 &&
                  (CompactUnwindEncoding & 0xF1C) == 0)
           CompactUnwindEncoding |= CU::UNWIND_ARM64_FRAME_X21_X22_PAIR;
-        else if (Reg1 == AArch64::X23 && Reg2 == AArch64::X24 &&
+        else if (Reg1 == AArch64::X18 && Reg2 == AArch64::X19 &&
                  (CompactUnwindEncoding & 0xF18) == 0)
-          CompactUnwindEncoding |= CU::UNWIND_ARM64_FRAME_X23_X24_PAIR;
-        else if (Reg1 == AArch64::X25 && Reg2 == AArch64::X26 &&
+          CompactUnwindEncoding |= CU::UNWIND_ARM64_FRAME_X18_X19_PAIR;
+        else if (Reg1 == AArch64::X20 && Reg2 == AArch64::X21 &&
                  (CompactUnwindEncoding & 0xF10) == 0)
-          CompactUnwindEncoding |= CU::UNWIND_ARM64_FRAME_X25_X26_PAIR;
-        else if (Reg1 == AArch64::X27 && Reg2 == AArch64::X28 &&
+          CompactUnwindEncoding |= CU::UNWIND_ARM64_FRAME_X20_X21_PAIR;
+        else if (Reg1 == AArch64::X22 && Reg2 == AArch64::X23 &&
                  (CompactUnwindEncoding & 0xF00) == 0)
-          CompactUnwindEncoding |= CU::UNWIND_ARM64_FRAME_X27_X28_PAIR;
+          CompactUnwindEncoding |= CU::UNWIND_ARM64_FRAME_X22_X23_PAIR;
         else {
           Reg1 = getDRegFromBReg(Reg1);
           Reg2 = getDRegFromBReg(Reg2);

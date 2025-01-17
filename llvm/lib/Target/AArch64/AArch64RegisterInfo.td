@@ -87,10 +87,6 @@ def W20   : AArch64Reg<20, "w20">, DwarfRegNum<[20]>;
 def W21   : AArch64Reg<21, "w21">, DwarfRegNum<[21]>;
 def W22   : AArch64Reg<22, "w22">, DwarfRegNum<[22]>;
 def W23   : AArch64Reg<23, "w23">, DwarfRegNum<[23]>;
-def W24   : AArch64Reg<24, "w24">, DwarfRegNum<[24]>;
-def W25   : AArch64Reg<25, "w25">, DwarfRegNum<[25]>;
-def W26   : AArch64Reg<26, "w26">, DwarfRegNum<[26]>;
-def W27   : AArch64Reg<27, "w27">, DwarfRegNum<[27]>;
 def W28   : AArch64Reg<28, "w28">, DwarfRegNum<[28]>;
 def W29   : AArch64Reg<29, "w29">, DwarfRegNum<[29]>;
 def W30   : AArch64Reg<30, "w30">, DwarfRegNum<[30]>;
@@ -123,10 +119,6 @@ def X20   : AArch64Reg<20, "x20", [W20]>, DwarfRegAlias<W20>;
 def X21   : AArch64Reg<21, "x21", [W21]>, DwarfRegAlias<W21>;
 def X22   : AArch64Reg<22, "x22", [W22]>, DwarfRegAlias<W22>;
 def X23   : AArch64Reg<23, "x23", [W23]>, DwarfRegAlias<W23>;
-def X24   : AArch64Reg<24, "x24", [W24]>, DwarfRegAlias<W24>;
-def X25   : AArch64Reg<25, "x25", [W25]>, DwarfRegAlias<W25>;
-def X26   : AArch64Reg<26, "x26", [W26]>, DwarfRegAlias<W26>;
-def X27   : AArch64Reg<27, "x27", [W27]>, DwarfRegAlias<W27>;
 def X28   : AArch64Reg<28, "x28", [W28]>, DwarfRegAlias<W28>;
 def FP    : AArch64Reg<29, "x29", [W29]>, DwarfRegAlias<W29>;
 def LR    : AArch64Reg<30, "x30", [W30]>, DwarfRegAlias<W30>;
@@ -152,12 +144,12 @@ def FPSR : AArch64Reg<0, "fpsr">;
 
 // GPR register classes with the intersections of GPR32/GPR32sp and
 // GPR64/GPR64sp for use by the coalescer.
-def GPR32common : RegisterClass<"AArch64", [i32], 32, (sequence "W%u", 0, 30)> {
+def GPR32common : RegisterClass<"AArch64", [i32], 32, (add (sequence "W%u", 0, 23), (sequence "W%u", 28, 30))> {
   let AltOrders = [(rotl GPR32common, 8)];
   let AltOrderSelect = [{ return 1; }];
 }
 def GPR64common : RegisterClass<"AArch64", [i64], 64,
-                                (add (sequence "X%u", 0, 28), FP, LR)> {
+                                (add (sequence "X%u", 0, 23), X28, FP, LR)> {
   let AltOrders = [(rotl GPR64common, 8)];
   let AltOrderSelect = [{ return 1; }];
   let DecoderMethod = "DecodeSimpleRegisterClass<AArch64::GPR64commonRegClassID, 0, 31>";
@@ -222,8 +214,8 @@ def GPR64all : RegisterClass<"AArch64", [i64], 64, (add GPR64common, XZR, SP)>;
 // to the saved value before the tail call, which would clobber a call address.
 // This is for indirect tail calls to store the address of the destination.
 def tcGPR64 : RegisterClass<"AArch64", [i64], 64, (sub GPR64common, X19, X20, X21,
-                                                     X22, X23, X24, X25, X26,
-                                                     X27, X28, FP, LR)>;
+                                                     X22, X23,
+                                                     X28, FP, LR)>;
 
 // Restricted sets of tail call registers, for use when branch target
 // enforcement or PAuthLR are enabled.

@@ -406,8 +406,7 @@ AArch64RegisterInfo::explainReservedReg(const MachineFunction &MF,
     bool warn = false;
     if (MCRegisterInfo::regsOverlap(PhysReg, AArch64::X13) ||
         MCRegisterInfo::regsOverlap(PhysReg, AArch64::X14) ||
-        MCRegisterInfo::regsOverlap(PhysReg, AArch64::X23) ||
-        MCRegisterInfo::regsOverlap(PhysReg, AArch64::X24) ||
+        MCRegisterInfo::regsOverlap(PhysReg, AArch64::X23) || // Hack! x24 is ecluded
         MCRegisterInfo::regsOverlap(PhysReg, AArch64::X28))
       warn = true;
 
@@ -436,12 +435,11 @@ AArch64RegisterInfo::getStrictlyReservedRegs(const MachineFunction &MF) const {
     markSuperRegs(Reserved, AArch64::W29);
 
   if (MF.getSubtarget<AArch64Subtarget>().isWindowsArm64EC()) {
-    // x13, x14, x23, x24, x28, and v16-v31 are clobbered by asynchronous
+    // x13, x14, x23, x28, and v16-v31 are clobbered by asynchronous // Hack! x24 is excluded
     // signals, so we can't ever use them.
     markSuperRegs(Reserved, AArch64::W13);
     markSuperRegs(Reserved, AArch64::W14);
     markSuperRegs(Reserved, AArch64::W23);
-    markSuperRegs(Reserved, AArch64::W24);
     markSuperRegs(Reserved, AArch64::W28);
     for (unsigned i = AArch64::B16; i <= AArch64::B31; ++i)
       markSuperRegs(Reserved, i);
@@ -482,9 +480,7 @@ AArch64RegisterInfo::getStrictlyReservedRegs(const MachineFunction &MF) const {
   markSuperRegs(Reserved, AArch64::FPSR);
 
   if (MF.getFunction().getCallingConv() == CallingConv::GRAAL) {
-    markSuperRegs(Reserved, AArch64::X27);
     markSuperRegs(Reserved, AArch64::X28);
-    markSuperRegs(Reserved, AArch64::W27);
     markSuperRegs(Reserved, AArch64::W28);
   }
 

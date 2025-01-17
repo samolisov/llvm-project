@@ -496,7 +496,7 @@ def CC_AArch64_GHC : CallingConv<[
   CCIfType<[i8, i16, i32], CCPromoteToType<i64>>,
 
   // Pass in STG registers: Base, Sp, Hp, R1, R2, R3, R4, R5, R6, SpLim
-  CCIfType<[i64], CCAssignToReg<[X19, X20, X21, X22, X23, X24, X25, X26, X27, X28]>>
+  CCIfType<[i64], CCAssignToReg<[X19, X20, X21, X22, X23, X28]>>
 ]>;
 
 let Entry = 1 in
@@ -522,12 +522,12 @@ def CC_AArch64_Preserve_None : CallingConv<[
   // X9 is assigned last as it is used in FrameLowering as the first
   // choice for a scratch register.
   CCIfType<[i32], CCAssignToReg<[W20, W21, W22, W23,
-                                 W24, W25, W26, W27, W28,
+                                 W28,
                                  W0, W1, W2, W3, W4, W5,
                                  W6, W7, W10, W11,
                                  W12, W13, W14, W9]>>,
   CCIfType<[i64], CCAssignToReg<[X20, X21, X22, X23,
-                                 X24, X25, X26, X27, X28,
+                                 X28,
                                  X0, X1, X2, X3, X4, X5,
                                  X6, X7, X10, X11,
                                  X12, X13, X14, X9]>>,
@@ -555,8 +555,8 @@ def CC_AArch64_Preserve_None : CallingConv<[
 // It would be better to model its preservation semantics properly (create a
 // vreg on entry, use it in RET & tail call generation; make that vreg def if we
 // end up saving LR as part of a call frame). Watch this space...
-def CSR_AArch64_AAPCS : CalleeSavedRegs<(add X19, X20, X21, X22, X23, X24,
-                                           X25, X26, X27, X28, LR, FP,
+def CSR_AArch64_AAPCS : CalleeSavedRegs<(add X19, X20, X21, X22, X23,
+                                           X28, LR, FP,
                                            D8,  D9,  D10, D11,
                                            D12, D13, D14, D15)>;
 
@@ -567,8 +567,8 @@ def CSR_AArch64_AAPCS_X18 : CalleeSavedRegs<(add X18, CSR_AArch64_AAPCS)>;
 // Win64 has unwinding codes for an (FP,LR) pair, save_fplr and save_fplr_x.
 // We put FP before LR, so that frame lowering logic generates (FP,LR) pairs,
 // and not (LR,FP) pairs.
-def CSR_Win_AArch64_AAPCS : CalleeSavedRegs<(add X19, X20, X21, X22, X23, X24,
-                                               X25, X26, X27, X28, FP, LR,
+def CSR_Win_AArch64_AAPCS : CalleeSavedRegs<(add X19, X20, X21, X22, X23,
+                                               X28, FP, LR,
                                                D8, D9, D10, D11,
                                                D12, D13, D14, D15)>;
 
@@ -586,49 +586,49 @@ def CSR_Win_AArch64_CFGuard_Check : CalleeSavedRegs<(add CSR_Win_AArch64_AAPCS,
 
 // To match the x64 calling convention, Arm64EC thunks preserve q6-q15.
 def CSR_Win_AArch64_Arm64EC_Thunk : CalleeSavedRegs<(add (sequence "Q%u", 6, 15),
-                                                         X19, X20, X21, X22, X23, X24,
-                                                         X25, X26, X27, X28, FP, LR)>;
+                                                         X19, X20, X21, X22, X23,
+                                                         X28, FP, LR)>;
 
 // AArch64 PCS for vector functions (VPCS)
 // must (additionally) preserve full Q8-Q23 registers
-def CSR_AArch64_AAVPCS : CalleeSavedRegs<(add X19, X20, X21, X22, X23, X24,
-                                          X25, X26, X27, X28, LR, FP,
+def CSR_AArch64_AAVPCS : CalleeSavedRegs<(add X19, X20, X21, X22, X23,
+                                          X28, LR, FP,
                                           (sequence "Q%u", 8, 23))>;
 
 // Functions taking SVE arguments or returning an SVE type
 // must (additionally) preserve full Z8-Z23 and predicate registers P4-P15
 def CSR_AArch64_SVE_AAPCS : CalleeSavedRegs<(add (sequence "Z%u", 8, 23),
                                                  (sequence "P%u", 4, 15),
-                                                 X19, X20, X21, X22, X23, X24,
-                                                 X25, X26, X27, X28, LR, FP)>;
+                                                 X19, X20, X21, X22, X23,
+                                                 X28, LR, FP)>;
 
 // SME ABI support routines such as __arm_tpidr2_save/restore preserve most registers.
 def CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0
                           : CalleeSavedRegs<(add (sequence "Z%u", 0, 31),
                                                  (sequence "P%u", 0, 15),
                                                  (sequence "X%u", 0, 13),
-                                                 (sequence "X%u",19, 28),
-                                                 LR, FP)>;
+                                                 (sequence "X%u",19, 23),
+                                                 X28, LR, FP)>;
 
 // SME ABI support routines such as __arm_get_current_vg preserve most registers.
 def CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1
                           : CalleeSavedRegs<(add (sequence "Z%u", 0, 31),
                                                  (sequence "P%u", 0, 15),
                                                  (sequence "X%u", 1, 15),
-                                                 (sequence "X%u",19, 28),
-                                                 LR, FP)>;
+                                                 (sequence "X%u",19, 23),
+                                                 X28, LR, FP)>;
 
 // SME ABI support routines __arm_sme_state preserves most registers.
 def CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X2
                           : CalleeSavedRegs<(add (sequence "Z%u", 0, 31),
                                                  (sequence "P%u", 0, 15),
                                                  (sequence "X%u", 2, 15),
-                                                 (sequence "X%u",19, 28),
-                                                 LR, FP)>;
+                                                 (sequence "X%u",19, 23),
+                                                 X28, LR, FP)>;
 
 // The SMSTART/SMSTOP instructions preserve only GPR registers.
-def CSR_AArch64_SMStartStop : CalleeSavedRegs<(add (sequence "X%u", 0, 28),
-                                                   LR, FP)>;
+def CSR_AArch64_SMStartStop : CalleeSavedRegs<(add (sequence "X%u", 0, 23),
+                                                   X28, LR, FP)>;
 
 def CSR_AArch64_AAPCS_SwiftTail
     : CalleeSavedRegs<(sub CSR_AArch64_AAPCS, X20, X22)>;
@@ -649,12 +649,12 @@ def CSR_AArch64_AAPCS_SwiftError
 // The ELF stub used for TLS-descriptor access saves every feasible
 // register. Only X0 and LR are clobbered.
 def CSR_AArch64_TLS_ELF
-    : CalleeSavedRegs<(add (sequence "X%u", 1, 28), FP,
+    : CalleeSavedRegs<(add (sequence "X%u", 1, 23), X28, FP,
                            (sequence "Q%u", 0, 31))>;
 
 def CSR_AArch64_AllRegs
-    : CalleeSavedRegs<(add (sequence "W%u", 0, 30), WSP,
-                           (sequence "X%u", 0, 28), FP, LR, SP,
+    : CalleeSavedRegs<(add (sequence "W%u", 0, 23), W28, W29, W30, WSP,
+                           (sequence "X%u", 0, 23), X28, FP, LR, SP,
                            (sequence "B%u", 0, 31), (sequence "H%u", 0, 31),
                            (sequence "S%u", 0, 31), (sequence "D%u", 0, 31),
                            (sequence "Q%u", 0, 31))>;
@@ -671,18 +671,18 @@ def CSR_AArch64_RT_AllRegs :  CalleeSavedRegs<(add CSR_AArch64_RT_MostRegs,
 
 def CSR_AArch64_StackProbe_Windows
     : CalleeSavedRegs<(add (sequence "X%u", 0, 15),
-                           (sequence "X%u", 18, 28), FP, SP,
+                           (sequence "X%u", 18, 23), X28, FP, SP,
                            (sequence "Q%u", 0, 31))>;
 
 // Darwin variants of AAPCS.
 // Darwin puts the frame-record at the top of the callee-save area.
 def CSR_Darwin_AArch64_AAPCS : CalleeSavedRegs<(add LR, FP, X19, X20, X21, X22,
-                                                X23, X24, X25, X26, X27, X28,
+                                                X23, X28,
                                                 D8,  D9,  D10, D11,
                                                 D12, D13, D14, D15)>;
 
 def CSR_Darwin_AArch64_AAVPCS : CalleeSavedRegs<(add LR, FP, X19, X20, X21,
-                                                 X22, X23, X24, X25, X26, X27,
+                                                 X22, X23,
                                                  X28, (sequence "Q%u", 8, 23))>;
 
 // For Windows calling convention on a non-windows OS, where X18 is treated
@@ -707,8 +707,8 @@ def CSR_Darwin_AArch64_AAPCS_SwiftTail
 // fast path for calculation, but other registers except X0 (argument/return)
 // and LR (it is a call, after all) are preserved.
 def CSR_Darwin_AArch64_TLS
-    : CalleeSavedRegs<(add (sub (sequence "X%u", 1, 28), X16, X17),
-                           FP,
+    : CalleeSavedRegs<(add (sub (sequence "X%u", 1, 23), X16, X17),
+                           X28, FP,
                            (sequence "Q%u", 0, 31))>;
 
 // We can only handle a register pair with adjacent registers, the register pair
@@ -717,7 +717,8 @@ def CSR_Darwin_AArch64_TLS
 // CSR_Darwin_AArch64_CXX_TLS should be a subset of CSR_Darwin_AArch64_TLS.
 def CSR_Darwin_AArch64_CXX_TLS
     : CalleeSavedRegs<(add CSR_Darwin_AArch64_AAPCS,
-                           (sub (sequence "X%u", 1, 28), X9, X15, X16, X17, X18, X19),
+                           (sub (sequence "X%u", 1, 23), X9, X15, X16, X17, X18, X19),
+                           X28,
                            (sequence "D%u", 0, 31))>;
 
 // CSRs that are handled by prologue, epilogue.

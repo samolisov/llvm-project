@@ -2881,7 +2881,7 @@ static bool invalidateWindowsRegisterPairing(unsigned Reg1, unsigned Reg2,
   // predecrement, but there's no save_lrpair_x opcode, so we can only do this
   // if LR is paired with something else than the first register.
   // The save_lrpair opcode requires the first register to be an odd one.
-  if (Reg1 >= AArch64::X19 && Reg1 <= AArch64::X27 &&
+  if (Reg1 >= AArch64::X19 && Reg1 <= AArch64::X23 &&
       (Reg1 - AArch64::X19) % 2 == 0 && Reg2 == AArch64::LR && !IsFirst)
     return false;
   return true;
